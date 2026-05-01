@@ -3,6 +3,10 @@ import type { ChatMessage } from "./prompt.js";
 
 const MAX_TOKENS = 16000;
 
+function isAbortError(err: unknown): boolean {
+  return (err as { name?: string } | null)?.name === "AbortError";
+}
+
 export async function callQwen(
   messages: ChatMessage[],
   config: Config,
@@ -21,46 +25,69 @@ export async function callQwen(
     config.requestTimeoutMs,
   );
 
-  let response: Response;
   try {
-    response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: config.model,
-        messages,
-        max_tokens: MAX_TOKENS,
-      }),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    if ((err as Error).name === "AbortError") {
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          model: config.model,
+          messages,
+          max_tokens: MAX_TOKENS,
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw new Error(
+          `Qwen request timed out after ${config.requestTimeoutMs}ms (url: ${url})`,
+        );
+      }
       throw new Error(
-        `Qwen request timed out after ${config.requestTimeoutMs}ms (url: ${url})`,
+        `Cannot reach upstream at ${config.baseUrl}: ${(err as Error).message}`,
       );
     }
-    throw new Error(
-      `Cannot reach upstream at ${config.baseUrl}: ${(err as Error).message}`,
-    );
+
+    if (!response.ok) {
+      let body: string;
+      try {
+        body = await response.text();
+      } catch (err) {
+        if (isAbortError(err)) {
+          throw new Error(
+            `Qwen request timed out after ${config.requestTimeoutMs}ms (url: ${url})`,
+          );
+        }
+        throw err;
+      }
+      throw new Error(
+        `Upstream returned ${response.status}: ${body.slice(0, 500)}`,
+      );
+    }
+
+    let json: { choices?: Array<{ message?: { content?: string } }> };
+    try {
+      json = (await response.json()) as typeof json;
+    } catch (err) {
+      if (isAbortError(err)) {
+        throw new Error(
+          `Qwen request timed out after ${config.requestTimeoutMs}ms (url: ${url})`,
+        );
+      }
+      throw new Error(
+        `Upstream at ${url} returned 200 but unparseable JSON: ${(err as Error).message}`,
+      );
+    }
+
+    const content = json.choices?.[0]?.message?.content;
+    if (typeof content !== "string") {
+      throw new Error(
+        `Unexpected response from upstream (no choices[0].message.content): ${JSON.stringify(json).slice(0, 300)}`,
+      );
+    }
+    return content;
   } finally {
     clearTimeout(timeout);
   }
-
-  if (!response.ok) {
-    const body = await response.text();
-    throw new Error(
-      `Upstream returned ${response.status}: ${body.slice(0, 500)}`,
-    );
-  }
-
-  const json = (await response.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
-  };
-  const content = json.choices?.[0]?.message?.content;
-  if (typeof content !== "string") {
-    throw new Error(
-      `Unexpected response from upstream (no choices[0].message.content): ${JSON.stringify(json).slice(0, 300)}`,
-    );
-  }
-  return content;
 }

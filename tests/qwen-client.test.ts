@@ -108,4 +108,13 @@ describe("callQwen", () => {
       callQwen([{ role: "user", content: "x" }], baseConfig),
     ).rejects.toThrow(/Unexpected response/);
   });
+
+  it("throws a clear error when 200 response has unparseable JSON", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("not json {{{", { status: 200, headers: { "Content-Type": "application/json" } }),
+    );
+    await expect(
+      callQwen([{ role: "user", content: "x" }], baseConfig),
+    ).rejects.toThrow(/returned 200 but unparseable JSON/);
+  });
 });
