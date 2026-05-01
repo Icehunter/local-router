@@ -1,0 +1,7 @@
+{
+  "baseUrl": "http://192.168.1.50:1234",
+  "model": "qwen3-coder",
+  "apiKey": null,
+  "tokenBudget": 180000,
+  "requestTimeoutMs": 300000
+}
