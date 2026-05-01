@@ -43,10 +43,22 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
   if (process.env.QWEN_MODEL) out.model = process.env.QWEN_MODEL;
   if (process.env.QWEN_API_KEY) out.apiKey = process.env.QWEN_API_KEY;
   if (process.env.QWEN_TOKEN_BUDGET) {
-    out.tokenBudget = Number(process.env.QWEN_TOKEN_BUDGET);
+    const n = Number(process.env.QWEN_TOKEN_BUDGET);
+    if (!Number.isFinite(n)) {
+      throw new Error(
+        `QWEN_TOKEN_BUDGET must be a number, got: "${process.env.QWEN_TOKEN_BUDGET}"`,
+      );
+    }
+    out.tokenBudget = n;
   }
   if (process.env.QWEN_REQUEST_TIMEOUT_MS) {
-    out.requestTimeoutMs = Number(process.env.QWEN_REQUEST_TIMEOUT_MS);
+    const n = Number(process.env.QWEN_REQUEST_TIMEOUT_MS);
+    if (!Number.isFinite(n)) {
+      throw new Error(
+        `QWEN_REQUEST_TIMEOUT_MS must be a number, got: "${process.env.QWEN_REQUEST_TIMEOUT_MS}"`,
+      );
+    }
+    out.requestTimeoutMs = n;
   }
   return out;
 }

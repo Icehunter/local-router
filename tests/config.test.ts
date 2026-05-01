@@ -19,7 +19,10 @@ beforeEach(() => {
 
 afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
-  process.env = { ...origEnv };
+  for (const key of Object.keys(process.env)) {
+    if (!(key in origEnv)) delete process.env[key];
+  }
+  Object.assign(process.env, origEnv);
 });
 
 describe("loadConfig", () => {
@@ -84,5 +87,19 @@ describe("loadConfig", () => {
     const cfg = loadConfig();
     expect(cfg.tokenBudget).toBe(100000);
     expect(cfg.requestTimeoutMs).toBe(60000);
+  });
+
+  it("throws a clear error when QWEN_TOKEN_BUDGET is not numeric", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_TOKEN_BUDGET = "abc";
+    expect(() => loadConfig()).toThrow(/QWEN_TOKEN_BUDGET must be a number.*"abc"/);
+  });
+
+  it("throws a clear error when QWEN_REQUEST_TIMEOUT_MS is not numeric", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_REQUEST_TIMEOUT_MS = "xyz";
+    expect(() => loadConfig()).toThrow(/QWEN_REQUEST_TIMEOUT_MS must be a number.*"xyz"/);
   });
 });
