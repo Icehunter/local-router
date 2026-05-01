@@ -136,6 +136,10 @@ Most local servers default to single-request handling (e.g. llama.cpp's `--paral
 
 **"Qwen request timed out after Nms"** — Generation is slow on your hardware. Raise `requestTimeoutMs` or use a smaller model.
 
+**"Unexpected response from upstream (no choices[0].message.content)"** — The LLM returned a valid HTTP 200 with JSON, but the response body is missing expected content fields, often due to the model hitting an internal stop condition or a misconfigured chat template. Verify your model's output by testing the endpoint directly with `curl` and inspecting the raw JSON response.
+
+**"Upstream at <url> returned 200 but unparseable JSON"** — The server responded with HTTP 200, but the body isn't valid JSON, likely because a reverse proxy injected an error page or the upstream timed out mid-response. Confirm your endpoint is correctly configured and not being intercepted by middleware; test the raw URL with `curl` to inspect the actual response body.
+
 **Plugin doesn't show up in Claude Code** — Check Claude Code's session-startup logs; if the MCP server failed to start, the error message will tell you what's wrong (usually missing config).
 
 ## License
