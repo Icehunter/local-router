@@ -3,5 +3,9 @@
   "model": "qwen3-coder",
   "apiKey": null,
   "tokenBudget": 180000,
-  "requestTimeoutMs": 300000
+  "requestTimeoutMs": 300000,
+  "temperature": 0.2,
+  "topP": 0.95,
+  "topK": 40,
+  "minP": 0.05
 }

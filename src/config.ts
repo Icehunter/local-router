@@ -11,6 +11,10 @@ const ConfigSchema = z.object({
   apiKey: z.string().nullable().default(null),
   tokenBudget: z.number().int().positive().default(180000),
   requestTimeoutMs: z.number().int().positive().default(300000),
+  temperature: z.number().min(0).max(2).default(0.2),
+  topP: z.number().min(0).max(1).default(0.95),
+  topK: z.number().int().nonnegative().default(40),
+  minP: z.number().min(0).max(1).default(0.05),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -21,6 +25,10 @@ interface RawConfig {
   apiKey?: unknown;
   tokenBudget?: unknown;
   requestTimeoutMs?: unknown;
+  temperature?: unknown;
+  topP?: unknown;
+  topK?: unknown;
+  minP?: unknown;
 }
 
 function readConfigFile(): RawConfig {
@@ -59,6 +67,42 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
       );
     }
     out.requestTimeoutMs = n;
+  }
+  if (process.env.QWEN_TEMPERATURE) {
+    const n = Number(process.env.QWEN_TEMPERATURE);
+    if (!Number.isFinite(n)) {
+      throw new Error(
+        `QWEN_TEMPERATURE must be a number, got: "${process.env.QWEN_TEMPERATURE}"`,
+      );
+    }
+    out.temperature = n;
+  }
+  if (process.env.QWEN_TOP_P) {
+    const n = Number(process.env.QWEN_TOP_P);
+    if (!Number.isFinite(n)) {
+      throw new Error(
+        `QWEN_TOP_P must be a number, got: "${process.env.QWEN_TOP_P}"`,
+      );
+    }
+    out.topP = n;
+  }
+  if (process.env.QWEN_TOP_K) {
+    const n = Number(process.env.QWEN_TOP_K);
+    if (!Number.isFinite(n)) {
+      throw new Error(
+        `QWEN_TOP_K must be a number, got: "${process.env.QWEN_TOP_K}"`,
+      );
+    }
+    out.topK = n;
+  }
+  if (process.env.QWEN_MIN_P) {
+    const n = Number(process.env.QWEN_MIN_P);
+    if (!Number.isFinite(n)) {
+      throw new Error(
+        `QWEN_MIN_P must be a number, got: "${process.env.QWEN_MIN_P}"`,
+      );
+    }
+    out.minP = n;
   }
   return out;
 }

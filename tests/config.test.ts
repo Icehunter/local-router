@@ -15,6 +15,10 @@ beforeEach(() => {
   delete process.env.QWEN_API_KEY;
   delete process.env.QWEN_TOKEN_BUDGET;
   delete process.env.QWEN_REQUEST_TIMEOUT_MS;
+  delete process.env.QWEN_TEMPERATURE;
+  delete process.env.QWEN_TOP_P;
+  delete process.env.QWEN_TOP_K;
+  delete process.env.QWEN_MIN_P;
 });
 
 afterEach(() => {
@@ -101,5 +105,43 @@ describe("loadConfig", () => {
     process.env.QWEN_MODEL = "m";
     process.env.QWEN_REQUEST_TIMEOUT_MS = "xyz";
     expect(() => loadConfig()).toThrow(/QWEN_REQUEST_TIMEOUT_MS must be a number.*"xyz"/);
+  });
+
+  it("includes code-friendly sampling defaults", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    const cfg = loadConfig();
+    expect(cfg.temperature).toBe(0.2);
+    expect(cfg.topP).toBe(0.95);
+    expect(cfg.topK).toBe(40);
+    expect(cfg.minP).toBe(0.05);
+  });
+
+  it("env vars override sampling defaults", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_TEMPERATURE = "0.8";
+    process.env.QWEN_TOP_P = "0.9";
+    process.env.QWEN_TOP_K = "20";
+    process.env.QWEN_MIN_P = "0.1";
+    const cfg = loadConfig();
+    expect(cfg.temperature).toBe(0.8);
+    expect(cfg.topP).toBe(0.9);
+    expect(cfg.topK).toBe(20);
+    expect(cfg.minP).toBe(0.1);
+  });
+
+  it("rejects out-of-range sampling values", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_TOP_P = "1.5"; // out of [0,1]
+    expect(() => loadConfig()).toThrow(/topP/);
+  });
+
+  it("throws clear error when sampling env var is non-numeric", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_TEMPERATURE = "hot";
+    expect(() => loadConfig()).toThrow(/QWEN_TEMPERATURE must be a number.*"hot"/);
   });
 });

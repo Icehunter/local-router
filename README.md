@@ -69,6 +69,10 @@ Edit `config.json`:
 | `apiKey` | no | `null` | Bearer token if your server is behind auth. |
 | `tokenBudget` | no | `180000` | Max prompt size before the tool errors. Leaves headroom for response inside a 200K context. |
 | `requestTimeoutMs` | no | `300000` | 5 min. Local generation can be slow. |
+| `temperature` | no | `0.2` | Sampling temperature. Lower = more deterministic. 0.2 is good for code; 0.7+ is more creative. |
+| `topP` | no | `0.95` | Nucleus sampling. Probability mass cutoff for candidate tokens. |
+| `topK` | no | `40` | Top-K sampling. Max number of candidate tokens at each step. 0 disables. |
+| `minP` | no | `0.05` | Min-P sampling. Cuts low-probability token tails — recommended for code by Qwen docs. |
 
 ### Environment variable overrides
 
@@ -79,6 +83,10 @@ Any of these wins over `config.json`:
 - `QWEN_API_KEY`
 - `QWEN_TOKEN_BUDGET`
 - `QWEN_REQUEST_TIMEOUT_MS`
+- `QWEN_TEMPERATURE`
+- `QWEN_TOP_P`
+- `QWEN_TOP_K`
+- `QWEN_MIN_P`
 
 ### Example: starting llama.cpp for this plugin
 

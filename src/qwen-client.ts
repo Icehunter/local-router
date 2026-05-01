@@ -35,6 +35,10 @@ export async function callQwen(
           model: config.model,
           messages,
           max_tokens: MAX_TOKENS,
+          temperature: config.temperature,
+          top_p: config.topP,
+          top_k: config.topK,
+          min_p: config.minP,
         }),
         signal: controller.signal,
       });

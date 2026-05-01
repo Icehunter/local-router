@@ -8,6 +8,10 @@ const baseConfig: Config = {
   apiKey: null,
   tokenBudget: 180000,
   requestTimeoutMs: 5000,
+  temperature: 0.2,
+  topP: 0.95,
+  topK: 40,
+  minP: 0.05,
 };
 
 const ok = (text: string) =>
@@ -37,6 +41,10 @@ describe("callQwen", () => {
     expect(body.model).toBe("test-model");
     expect(body.messages).toEqual([{ role: "user", content: "say hi" }]);
     expect(body.max_tokens).toBe(16000);
+    expect(body.temperature).toBe(0.2);
+    expect(body.top_p).toBe(0.95);
+    expect(body.top_k).toBe(40);
+    expect(body.min_p).toBe(0.05);
   });
 
   it("includes Authorization header when apiKey is set", async () => {
@@ -116,5 +124,24 @@ describe("callQwen", () => {
     await expect(
       callQwen([{ role: "user", content: "x" }], baseConfig),
     ).rejects.toThrow(/returned 200 but unparseable JSON/);
+  });
+
+  it("forwards configured sampling params in the request body", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("ok"));
+    await callQwen(
+      [{ role: "user", content: "x" }],
+      {
+        ...baseConfig,
+        temperature: 0.9,
+        topP: 0.8,
+        topK: 10,
+        minP: 0.01,
+      },
+    );
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(body.temperature).toBe(0.9);
+    expect(body.top_p).toBe(0.8);
+    expect(body.top_k).toBe(10);
+    expect(body.min_p).toBe(0.01);
   });
 });
