@@ -144,4 +144,20 @@ describe("loadConfig", () => {
     process.env.QWEN_TEMPERATURE = "hot";
     expect(() => loadConfig()).toThrow(/QWEN_TEMPERATURE must be a number.*"hot"/);
   });
+
+  it("treats QWEN_TOP_K=\"0\" as a real override (not falsy default)", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_TOP_K = "0";
+    const cfg = loadConfig();
+    expect(cfg.topK).toBe(0);
+  });
+
+  it("treats QWEN_TEMPERATURE=\"0\" as a real override (not falsy default)", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_TEMPERATURE = "0";
+    const cfg = loadConfig();
+    expect(cfg.temperature).toBe(0);
+  });
 });

@@ -50,7 +50,7 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
   if (process.env.QWEN_BASE_URL) out.baseUrl = process.env.QWEN_BASE_URL;
   if (process.env.QWEN_MODEL) out.model = process.env.QWEN_MODEL;
   if (process.env.QWEN_API_KEY) out.apiKey = process.env.QWEN_API_KEY;
-  if (process.env.QWEN_TOKEN_BUDGET) {
+  if (process.env.QWEN_TOKEN_BUDGET !== undefined) {
     const n = Number(process.env.QWEN_TOKEN_BUDGET);
     if (!Number.isFinite(n)) {
       throw new Error(
@@ -59,7 +59,7 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
     }
     out.tokenBudget = n;
   }
-  if (process.env.QWEN_REQUEST_TIMEOUT_MS) {
+  if (process.env.QWEN_REQUEST_TIMEOUT_MS !== undefined) {
     const n = Number(process.env.QWEN_REQUEST_TIMEOUT_MS);
     if (!Number.isFinite(n)) {
       throw new Error(
@@ -68,7 +68,7 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
     }
     out.requestTimeoutMs = n;
   }
-  if (process.env.QWEN_TEMPERATURE) {
+  if (process.env.QWEN_TEMPERATURE !== undefined) {
     const n = Number(process.env.QWEN_TEMPERATURE);
     if (!Number.isFinite(n)) {
       throw new Error(
@@ -77,7 +77,7 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
     }
     out.temperature = n;
   }
-  if (process.env.QWEN_TOP_P) {
+  if (process.env.QWEN_TOP_P !== undefined) {
     const n = Number(process.env.QWEN_TOP_P);
     if (!Number.isFinite(n)) {
       throw new Error(
@@ -86,7 +86,7 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
     }
     out.topP = n;
   }
-  if (process.env.QWEN_TOP_K) {
+  if (process.env.QWEN_TOP_K !== undefined) {
     const n = Number(process.env.QWEN_TOP_K);
     if (!Number.isFinite(n)) {
       throw new Error(
@@ -95,7 +95,7 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
     }
     out.topK = n;
   }
-  if (process.env.QWEN_MIN_P) {
+  if (process.env.QWEN_MIN_P !== undefined) {
     const n = Number(process.env.QWEN_MIN_P);
     if (!Number.isFinite(n)) {
       throw new Error(
