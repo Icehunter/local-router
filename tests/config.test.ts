@@ -19,6 +19,7 @@ beforeEach(() => {
   delete process.env.QWEN_TOP_P;
   delete process.env.QWEN_TOP_K;
   delete process.env.QWEN_MIN_P;
+  delete process.env.QWEN_REPEAT_PENALTY;
 });
 
 afterEach(() => {
@@ -111,10 +112,11 @@ describe("loadConfig", () => {
     process.env.QWEN_BASE_URL = "http://x:1234";
     process.env.QWEN_MODEL = "m";
     const cfg = loadConfig();
-    expect(cfg.temperature).toBe(0.2);
-    expect(cfg.topP).toBe(0.95);
-    expect(cfg.topK).toBe(40);
+    expect(cfg.temperature).toBe(0.7);
+    expect(cfg.topP).toBe(0.8);
+    expect(cfg.topK).toBe(20);
     expect(cfg.minP).toBe(0.05);
+    expect(cfg.repeatPenalty).toBe(1.1);
   });
 
   it("env vars override sampling defaults", () => {
@@ -159,5 +161,27 @@ describe("loadConfig", () => {
     process.env.QWEN_TEMPERATURE = "0";
     const cfg = loadConfig();
     expect(cfg.temperature).toBe(0);
+  });
+
+  it("env var QWEN_REPEAT_PENALTY overrides default", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_REPEAT_PENALTY = "1.2";
+    const cfg = loadConfig();
+    expect(cfg.repeatPenalty).toBe(1.2);
+  });
+
+  it("rejects out-of-range repeatPenalty", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_REPEAT_PENALTY = "5"; // out of [0, 2]
+    expect(() => loadConfig()).toThrow(/repeatPenalty/);
+  });
+
+  it("throws clear error when QWEN_REPEAT_PENALTY is non-numeric", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_REPEAT_PENALTY = "high";
+    expect(() => loadConfig()).toThrow(/QWEN_REPEAT_PENALTY must be a number.*"high"/);
   });
 });

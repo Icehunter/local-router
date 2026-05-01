@@ -8,10 +8,11 @@ const baseConfig: Config = {
   apiKey: null,
   tokenBudget: 180000,
   requestTimeoutMs: 5000,
-  temperature: 0.2,
-  topP: 0.95,
-  topK: 40,
+  temperature: 0.7,
+  topP: 0.8,
+  topK: 20,
   minP: 0.05,
+  repeatPenalty: 1.1,
 };
 
 const ok = (text: string) =>
@@ -41,10 +42,11 @@ describe("callQwen", () => {
     expect(body.model).toBe("test-model");
     expect(body.messages).toEqual([{ role: "user", content: "say hi" }]);
     expect(body.max_tokens).toBe(16000);
-    expect(body.temperature).toBe(0.2);
-    expect(body.top_p).toBe(0.95);
-    expect(body.top_k).toBe(40);
+    expect(body.temperature).toBe(0.7);
+    expect(body.top_p).toBe(0.8);
+    expect(body.top_k).toBe(20);
     expect(body.min_p).toBe(0.05);
+    expect(body.repeat_penalty).toBe(1.1);
   });
 
   it("includes Authorization header when apiKey is set", async () => {
@@ -133,15 +135,17 @@ describe("callQwen", () => {
       {
         ...baseConfig,
         temperature: 0.9,
-        topP: 0.8,
+        topP: 0.7,
         topK: 10,
         minP: 0.01,
+        repeatPenalty: 1.2,
       },
     );
     const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
     expect(body.temperature).toBe(0.9);
-    expect(body.top_p).toBe(0.8);
+    expect(body.top_p).toBe(0.7);
     expect(body.top_k).toBe(10);
     expect(body.min_p).toBe(0.01);
+    expect(body.repeat_penalty).toBe(1.2);
   });
 });

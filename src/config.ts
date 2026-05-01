@@ -11,10 +11,11 @@ const ConfigSchema = z.object({
   apiKey: z.string().nullable().default(null),
   tokenBudget: z.number().int().positive().default(180000),
   requestTimeoutMs: z.number().int().positive().default(300000),
-  temperature: z.number().min(0).max(2).default(0.2),
-  topP: z.number().min(0).max(1).default(0.95),
-  topK: z.number().int().nonnegative().default(40),
+  temperature: z.number().min(0).max(2).default(0.7),
+  topP: z.number().min(0).max(1).default(0.8),
+  topK: z.number().int().nonnegative().default(20),
   minP: z.number().min(0).max(1).default(0.05),
+  repeatPenalty: z.number().min(0).max(2).default(1.1),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -29,6 +30,7 @@ interface RawConfig {
   topP?: unknown;
   topK?: unknown;
   minP?: unknown;
+  repeatPenalty?: unknown;
 }
 
 function readConfigFile(): RawConfig {
@@ -103,6 +105,14 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
       );
     }
     out.minP = n;
+  }
+  if (process.env.QWEN_REPEAT_PENALTY !== undefined) {
+    const raw = process.env.QWEN_REPEAT_PENALTY;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) {
+      throw new Error(`QWEN_REPEAT_PENALTY must be a number, got: "${raw}"`);
+    }
+    out.repeatPenalty = n;
   }
   return out;
 }

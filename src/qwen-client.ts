@@ -39,6 +39,7 @@ export async function callQwen(
           top_p: config.topP,
           top_k: config.topK,
           min_p: config.minP,
+          repeat_penalty: config.repeatPenalty,
         }),
         signal: controller.signal,
       });

@@ -69,10 +69,11 @@ Edit `config.json`:
 | `apiKey` | no | `null` | Bearer token if your server is behind auth. |
 | `tokenBudget` | no | `180000` | Max prompt size before the tool errors. Leaves headroom for response inside a 200K context. |
 | `requestTimeoutMs` | no | `300000` | 5 min. Local generation can be slow. |
-| `temperature` | no | `0.2` | Sampling temperature. Lower = more deterministic. 0.2 is good for code; 0.7+ is more creative. |
-| `topP` | no | `0.95` | Nucleus sampling. Probability mass cutoff for candidate tokens. |
-| `topK` | no | `40` | Top-K sampling. Max number of candidate tokens at each step. 0 disables. |
+| `temperature` | no | `0.7` | Sampling temperature. Qwen team's recommendation for Qwen3-Coder. Lower = more deterministic but can amplify repetition loops without `repeatPenalty`. |
+| `topP` | no | `0.8` | Nucleus sampling. Probability mass cutoff for candidate tokens. |
+| `topK` | no | `20` | Top-K sampling. Max number of candidate tokens at each step. 0 disables. |
 | `minP` | no | `0.05` | Min-P sampling. Cuts low-probability token tails — recommended for code by Qwen docs. |
+| `repeatPenalty` | no | `1.1` | Penalty applied to recently-emitted tokens to suppress repetition loops. 1.0 = no penalty, 1.1 = standard, > 1.3 = often too suppressive. |
 
 ### Environment variable overrides
 
@@ -87,6 +88,7 @@ Any of these wins over `config.json`:
 - `QWEN_TOP_P`
 - `QWEN_TOP_K`
 - `QWEN_MIN_P`
+- `QWEN_REPEAT_PENALTY`
 
 ### Example: starting llama.cpp for this plugin
 
