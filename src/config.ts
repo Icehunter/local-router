@@ -127,7 +127,7 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
     out.repeatPenalty = n;
   }
   if (process.env.QWEN_DEBUG_LOG_PATH !== undefined) {
-    out.debugLogPath = process.env.QWEN_DEBUG_LOG_PATH;
+    out.debugLogPath = process.env.QWEN_DEBUG_LOG_PATH || null;
   }
   return out;
 }

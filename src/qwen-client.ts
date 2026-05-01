@@ -5,8 +5,9 @@ import type { ChatMessage } from "./prompt.js";
 const TRUNCATE_BYTES = 8192;
 
 function truncate(text: string): string {
-  if (Buffer.byteLength(text, "utf8") <= TRUNCATE_BYTES) return text;
-  return text.slice(0, TRUNCATE_BYTES) + "...[truncated]";
+  const buf = Buffer.from(text, "utf8");
+  if (buf.byteLength <= TRUNCATE_BYTES) return text;
+  return buf.toString("utf8", 0, TRUNCATE_BYTES) + "...[truncated]";
 }
 
 function writeDebugLog(

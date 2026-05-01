@@ -185,6 +185,8 @@ describe("callQwen", () => {
       );
       const log = readFileSync(logPath, "utf8");
       const entry = JSON.parse(log.trim());
+      expect(log.endsWith("\n")).toBe(true);
+      expect(log.trim().split("\n")).toHaveLength(1);
       expect(entry.timestamp).toMatch(/\d{4}-\d{2}-\d{2}T/);
       expect(entry.request.url).toBe("http://test-host:1234/v1/chat/completions");
       expect(entry.request.model).toBe("test-model");
@@ -210,8 +212,30 @@ describe("callQwen", () => {
       ).rejects.toThrow();
       const log = readFileSync(logPath, "utf8");
       const entry = JSON.parse(log.trim());
+      expect(log.endsWith("\n")).toBe(true);
+      expect(log.trim().split("\n")).toHaveLength(1);
       expect(entry.response.ok).toBe(false);
       expect(entry.response.error).toContain("404");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("appends successive JSONL entries on multiple calls", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "qwen-debug-"));
+    const logPath = join(tempDir, "debug.log");
+    try {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("first"));
+      await callQwen([{ role: "user", content: "a" }], { ...baseConfig, debugLogPath: logPath });
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("second"));
+      await callQwen([{ role: "user", content: "b" }], { ...baseConfig, debugLogPath: logPath });
+      const log = readFileSync(logPath, "utf8");
+      const lines = log.trim().split("\n");
+      expect(lines).toHaveLength(2);
+      const first = JSON.parse(lines[0]);
+      const second = JSON.parse(lines[1]);
+      expect(first.response.content).toBe("first");
+      expect(second.response.content).toBe("second");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
