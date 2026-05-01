@@ -6,7 +6,7 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig } from "./config.js";
-import { buildMessages } from "./prompt.js";
+import { buildMessages, wrapWithReviewReminder } from "./prompt.js";
 import type { OutputFormat } from "./prompt.js";
 import { callQwen } from "./qwen-client.js";
 import { estimateTokens } from "./tokens.js";
@@ -87,7 +87,7 @@ async function main(): Promise<void> {
 
     const text = await callQwen(messages, config);
     return {
-      content: [{ type: "text", text }],
+      content: [{ type: "text", text: wrapWithReviewReminder(text) }],
     };
   });
 

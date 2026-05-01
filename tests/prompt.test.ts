@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { buildMessages, DEFAULT_SYSTEM_PROMPT } from "../src/prompt.js";
+import {
+  buildMessages,
+  DEFAULT_SYSTEM_PROMPT,
+  REVIEW_REMINDER,
+  wrapWithReviewReminder,
+} from "../src/prompt.js";
 
 describe("buildMessages", () => {
   it("uses default system prompt when none provided", () => {
@@ -44,5 +49,38 @@ describe("buildMessages", () => {
     expect(messages[1].content).toBe(
       "write a fn\n\n---\n\nReturn only code. No prose, no fences unless syntactically required by the language.",
     );
+  });
+});
+
+describe("wrapWithReviewReminder", () => {
+  it("wraps output in <qwen_output> tags", () => {
+    const wrapped = wrapWithReviewReminder("function add(a, b) { return a + b; }");
+    expect(wrapped).toContain("<qwen_output>\nfunction add(a, b) { return a + b; }\n</qwen_output>");
+  });
+
+  it("appends the review reminder after the wrapped output", () => {
+    const wrapped = wrapWithReviewReminder("code");
+    expect(wrapped).toBe(`<qwen_output>\ncode\n</qwen_output>\n\n${REVIEW_REMINDER}`);
+  });
+
+  it("review reminder names Task tool and Sonnet subagent", () => {
+    expect(REVIEW_REMINDER).toContain("Task tool");
+    expect(REVIEW_REMINDER).toContain("Sonnet subagent");
+  });
+
+  it("review reminder forbids Edit/Write before review returns", () => {
+    expect(REVIEW_REMINDER).toContain("Do not call Edit or Write");
+  });
+
+  it("preserves the original output verbatim inside the wrapper", () => {
+    const original = "line1\n  line2\n\tline3 with <tags> & special chars";
+    const wrapped = wrapWithReviewReminder(original);
+    expect(wrapped).toContain(original);
+  });
+
+  it("review reminder lists objective skip criteria and post-review actions", () => {
+    expect(REVIEW_REMINDER).toContain("ALL THREE");
+    expect(REVIEW_REMINDER).toContain("fewer than 5 lines");
+    expect(REVIEW_REMINDER).toContain("regenerate via qwen_implement");
   });
 });

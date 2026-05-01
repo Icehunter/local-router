@@ -69,11 +69,13 @@ Edit `config.json`:
 | `apiKey` | no | `null` | Bearer token if your server is behind auth. |
 | `tokenBudget` | no | `180000` | Max prompt size before the tool errors. Leaves headroom for response inside a 200K context. |
 | `requestTimeoutMs` | no | `300000` | 5 min. Local generation can be slow. |
+| `maxTokens` | no | `16000` | Max tokens the model may generate per response. Most servers cap higher than this; raise if you need long completions. |
 | `temperature` | no | `0.7` | Sampling temperature. Qwen team's recommendation for Qwen3-Coder. Lower = more deterministic but can amplify repetition loops without `repeatPenalty`. |
 | `topP` | no | `0.8` | Nucleus sampling. Probability mass cutoff for candidate tokens. |
 | `topK` | no | `20` | Top-K sampling. Max number of candidate tokens at each step. 0 disables. |
 | `minP` | no | `0.05` | Min-P sampling. Cuts low-probability token tails — recommended for code by Qwen docs. |
 | `repeatPenalty` | no | `1.1` | Penalty applied to recently-emitted tokens to suppress repetition loops. 1.0 = no penalty, 1.1 = standard, > 1.3 = often too suppressive. |
+| `debugLogPath` | no | `null` | When set to a file path, the plugin appends a JSONL entry per call (request + response, bodies truncated at 8KB) to that file. Default `null` disables logging. |
 
 ### Environment variable overrides
 
@@ -84,11 +86,13 @@ Any of these wins over `config.json`:
 - `QWEN_API_KEY`
 - `QWEN_TOKEN_BUDGET`
 - `QWEN_REQUEST_TIMEOUT_MS`
+- `QWEN_MAX_TOKENS`
 - `QWEN_TEMPERATURE`
 - `QWEN_TOP_P`
 - `QWEN_TOP_K`
 - `QWEN_MIN_P`
 - `QWEN_REPEAT_PENALTY`
+- `QWEN_DEBUG_LOG_PATH`
 
 ### Example: starting llama.cpp for this plugin
 
@@ -141,6 +145,8 @@ Most local servers default to single-request handling (e.g. llama.cpp's `--paral
 **"Upstream at <url> returned 200 but unparseable JSON"** — The server responded with HTTP 200, but the body isn't valid JSON, likely because a reverse proxy injected an error page or the upstream timed out mid-response. Confirm your endpoint is correctly configured and not being intercepted by middleware; test the raw URL with `curl` to inspect the actual response body.
 
 **Plugin doesn't show up in Claude Code** — Check Claude Code's session-startup logs; if the MCP server failed to start, the error message will tell you what's wrong (usually missing config).
+
+**Don't know why a delegation went wrong** — Set `debugLogPath` (or `QWEN_DEBUG_LOG_PATH=/path/to/file.log`) and re-run. The plugin appends a JSONL entry per call with the prompt sent and the response received. Tail the file with `tail -f <path>`. Logging is off by default; remember to disable it after debugging if the file is in a sensitive location.
 
 ## License
 

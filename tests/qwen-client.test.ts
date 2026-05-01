@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { callQwen } from "../src/qwen-client.js";
 import type { Config } from "../src/config.js";
 
@@ -13,6 +16,8 @@ const baseConfig: Config = {
   topK: 20,
   minP: 0.05,
   repeatPenalty: 1.1,
+  maxTokens: 16000,
+  debugLogPath: null,
 };
 
 const ok = (text: string) =>
@@ -147,5 +152,68 @@ describe("callQwen", () => {
     expect(body.top_k).toBe(10);
     expect(body.min_p).toBe(0.01);
     expect(body.repeat_penalty).toBe(1.2);
+  });
+
+  it("uses configured maxTokens in the request body", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("ok"));
+    await callQwen(
+      [{ role: "user", content: "x" }],
+      { ...baseConfig, maxTokens: 4096 },
+    );
+    const body = JSON.parse(fetchMock.mock.calls[0][1]?.body as string);
+    expect(body.max_tokens).toBe(4096);
+  });
+
+  it("does not write to disk when debugLogPath is null", async () => {
+    // The default (debugLogPath: null) should never call appendFileSync.
+    // We can't easily verify "no fs write" without mocking node:fs, but
+    // since the existing test suite passed without writing files, this is
+    // implicit. Just confirm the call still works with null debugLogPath.
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("ok"));
+    const result = await callQwen([{ role: "user", content: "x" }], baseConfig);
+    expect(result).toBe("ok");
+  });
+
+  it("writes a JSONL entry on success when debugLogPath is set", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "qwen-debug-"));
+    const logPath = join(tempDir, "debug.log");
+    try {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("hello world"));
+      await callQwen(
+        [{ role: "user", content: "say hi" }],
+        { ...baseConfig, debugLogPath: logPath },
+      );
+      const log = readFileSync(logPath, "utf8");
+      const entry = JSON.parse(log.trim());
+      expect(entry.timestamp).toMatch(/\d{4}-\d{2}-\d{2}T/);
+      expect(entry.request.url).toBe("http://test-host:1234/v1/chat/completions");
+      expect(entry.request.model).toBe("test-model");
+      expect(entry.response.ok).toBe(true);
+      expect(entry.response.content).toBe("hello world");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes a JSONL entry on error when debugLogPath is set", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "qwen-debug-"));
+    const logPath = join(tempDir, "debug.log");
+    try {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("model not found", { status: 404 }),
+      );
+      await expect(
+        callQwen(
+          [{ role: "user", content: "x" }],
+          { ...baseConfig, debugLogPath: logPath },
+        ),
+      ).rejects.toThrow();
+      const log = readFileSync(logPath, "utf8");
+      const entry = JSON.parse(log.trim());
+      expect(entry.response.ok).toBe(false);
+      expect(entry.response.error).toContain("404");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });

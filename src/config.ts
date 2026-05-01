@@ -11,11 +11,13 @@ const ConfigSchema = z.object({
   apiKey: z.string().nullable().default(null),
   tokenBudget: z.number().int().positive().default(180000),
   requestTimeoutMs: z.number().int().positive().default(300000),
+  maxTokens: z.number().int().positive().default(16000),
   temperature: z.number().min(0).max(2).default(0.7),
   topP: z.number().min(0).max(1).default(0.8),
   topK: z.number().int().nonnegative().default(20),
   minP: z.number().min(0).max(1).default(0.05),
   repeatPenalty: z.number().min(0).max(2).default(1.1),
+  debugLogPath: z.string().nullable().default(null),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -26,11 +28,13 @@ interface RawConfig {
   apiKey?: unknown;
   tokenBudget?: unknown;
   requestTimeoutMs?: unknown;
+  maxTokens?: unknown;
   temperature?: unknown;
   topP?: unknown;
   topK?: unknown;
   minP?: unknown;
   repeatPenalty?: unknown;
+  debugLogPath?: unknown;
 }
 
 function readConfigFile(): RawConfig {
@@ -69,6 +73,14 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
       );
     }
     out.requestTimeoutMs = n;
+  }
+  if (process.env.QWEN_MAX_TOKENS !== undefined) {
+    const raw = process.env.QWEN_MAX_TOKENS;
+    const n = Number(raw);
+    if (!Number.isFinite(n)) {
+      throw new Error(`QWEN_MAX_TOKENS must be a number, got: "${raw}"`);
+    }
+    out.maxTokens = n;
   }
   if (process.env.QWEN_TEMPERATURE !== undefined) {
     const n = Number(process.env.QWEN_TEMPERATURE);
@@ -113,6 +125,9 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
       throw new Error(`QWEN_REPEAT_PENALTY must be a number, got: "${raw}"`);
     }
     out.repeatPenalty = n;
+  }
+  if (process.env.QWEN_DEBUG_LOG_PATH !== undefined) {
+    out.debugLogPath = process.env.QWEN_DEBUG_LOG_PATH;
   }
   return out;
 }

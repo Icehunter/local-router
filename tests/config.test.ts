@@ -20,6 +20,8 @@ beforeEach(() => {
   delete process.env.QWEN_TOP_K;
   delete process.env.QWEN_MIN_P;
   delete process.env.QWEN_REPEAT_PENALTY;
+  delete process.env.QWEN_MAX_TOKENS;
+  delete process.env.QWEN_DEBUG_LOG_PATH;
 });
 
 afterEach(() => {
@@ -183,5 +185,35 @@ describe("loadConfig", () => {
     process.env.QWEN_MODEL = "m";
     process.env.QWEN_REPEAT_PENALTY = "high";
     expect(() => loadConfig()).toThrow(/QWEN_REPEAT_PENALTY must be a number.*"high"/);
+  });
+
+  it("includes maxTokens default of 16000", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    const cfg = loadConfig();
+    expect(cfg.maxTokens).toBe(16000);
+  });
+
+  it("env var QWEN_MAX_TOKENS overrides default", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_MAX_TOKENS = "32000";
+    const cfg = loadConfig();
+    expect(cfg.maxTokens).toBe(32000);
+  });
+
+  it("env var QWEN_DEBUG_LOG_PATH sets debugLogPath", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    process.env.QWEN_DEBUG_LOG_PATH = "/tmp/qwen.log";
+    const cfg = loadConfig();
+    expect(cfg.debugLogPath).toBe("/tmp/qwen.log");
+  });
+
+  it("debugLogPath defaults to null", () => {
+    process.env.QWEN_BASE_URL = "http://x:1234";
+    process.env.QWEN_MODEL = "m";
+    const cfg = loadConfig();
+    expect(cfg.debugLogPath).toBeNull();
   });
 });

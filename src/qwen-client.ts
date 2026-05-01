@@ -1,17 +1,55 @@
+import { appendFileSync } from "node:fs";
 import type { Config } from "./config.js";
 import type { ChatMessage } from "./prompt.js";
 
-const MAX_TOKENS = 16000;
+const TRUNCATE_BYTES = 8192;
+
+function truncate(text: string): string {
+  if (Buffer.byteLength(text, "utf8") <= TRUNCATE_BYTES) return text;
+  return text.slice(0, TRUNCATE_BYTES) + "...[truncated]";
+}
+
+function writeDebugLog(
+  config: Config,
+  entry: {
+    request: { url: string; model: string; messages: unknown[] };
+    response: { ok: true; content: string } | { ok: false; error: string };
+  },
+): void {
+  if (!config.debugLogPath) return;
+  const line = JSON.stringify({
+    timestamp: new Date().toISOString(),
+    request: {
+      ...entry.request,
+      messages: entry.request.messages.map((m) => {
+        const msg = m as { role?: string; content?: string };
+        return {
+          role: msg.role,
+          content: typeof msg.content === "string" ? truncate(msg.content) : msg.content,
+        };
+      }),
+    },
+    response:
+      entry.response.ok
+        ? { ok: true, content: truncate(entry.response.content) }
+        : { ok: false, error: truncate(entry.response.error) },
+  }) + "\n";
+  try {
+    appendFileSync(config.debugLogPath, line, "utf8");
+  } catch {
+    // Debug log failures must never break the actual call. Swallow.
+  }
+}
 
 function isAbortError(err: unknown): boolean {
   return (err as { name?: string } | null)?.name === "AbortError";
 }
 
-export async function callQwen(
+async function callQwenInner(
   messages: ChatMessage[],
   config: Config,
+  url: string,
 ): Promise<string> {
-  const url = `${config.baseUrl}/v1/chat/completions`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -34,7 +72,7 @@ export async function callQwen(
         body: JSON.stringify({
           model: config.model,
           messages,
-          max_tokens: MAX_TOKENS,
+          max_tokens: config.maxTokens,
           temperature: config.temperature,
           top_p: config.topP,
           top_k: config.topK,
@@ -94,5 +132,24 @@ export async function callQwen(
     return content;
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+export async function callQwen(
+  messages: ChatMessage[],
+  config: Config,
+): Promise<string> {
+  const url = `${config.baseUrl}/v1/chat/completions`;
+  const requestSummary = { url, model: config.model, messages };
+  try {
+    const content = await callQwenInner(messages, config, url);
+    writeDebugLog(config, { request: requestSummary, response: { ok: true, content } });
+    return content;
+  } catch (err) {
+    writeDebugLog(config, {
+      request: requestSummary,
+      response: { ok: false, error: (err as Error).message },
+    });
+    throw err;
   }
 }
