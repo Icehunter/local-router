@@ -38,4 +38,11 @@ describe("buildMessages", () => {
     expect(messages[0].role).toBe("system");
     expect(messages[1].role).toBe("user");
   });
+
+  it("uses '\\n\\n---\\n\\n' as the separator between prompt and directive", () => {
+    const messages = buildMessages({ prompt: "write a fn", output_format: "code" });
+    expect(messages[1].content).toBe(
+      "write a fn\n\n---\n\nReturn only code. No prose, no fences unless syntactically required by the language.",
+    );
+  });
 });
