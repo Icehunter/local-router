@@ -53,23 +53,24 @@ describe("buildMessages", () => {
 });
 
 describe("wrapWithReviewReminder", () => {
-  it("wraps output in <qwen_output> tags", () => {
+  it("wraps output in <local_output> tags", () => {
     const wrapped = wrapWithReviewReminder("function add(a, b) { return a + b; }");
-    expect(wrapped).toContain("<qwen_output>\nfunction add(a, b) { return a + b; }\n</qwen_output>");
+    expect(wrapped).toContain("<local_output>\nfunction add(a, b) { return a + b; }\n</local_output>");
   });
 
   it("appends the review reminder after the wrapped output", () => {
     const wrapped = wrapWithReviewReminder("code");
-    expect(wrapped).toBe(`<qwen_output>\ncode\n</qwen_output>\n\n${REVIEW_REMINDER}`);
+    expect(wrapped).toBe(`<local_output>\ncode\n</local_output>\n\n${REVIEW_REMINDER}`);
   });
 
-  it("review reminder names Task tool and Sonnet subagent", () => {
-    expect(REVIEW_REMINDER).toContain("Task tool");
-    expect(REVIEW_REMINDER).toContain("Sonnet subagent");
+  it("review reminder is provider-neutral", () => {
+    expect(REVIEW_REMINDER).toContain("configured review path");
+    expect(REVIEW_REMINDER).toContain("Task or subagent tool");
+    expect(REVIEW_REMINDER).not.toContain("Sonnet");
   });
 
   it("review reminder forbids Edit/Write before review returns", () => {
-    expect(REVIEW_REMINDER).toContain("Do not call Edit or Write");
+    expect(REVIEW_REMINDER).toContain("Do not call Edit or Write until the review is complete");
   });
 
   it("preserves the original output verbatim inside the wrapper", () => {
@@ -81,6 +82,6 @@ describe("wrapWithReviewReminder", () => {
   it("review reminder lists objective skip criteria and post-review actions", () => {
     expect(REVIEW_REMINDER).toContain("ALL THREE");
     expect(REVIEW_REMINDER).toContain("fewer than 5 lines");
-    expect(REVIEW_REMINDER).toContain("regenerate via qwen_implement");
+    expect(REVIEW_REMINDER).toContain("regenerate via local_implement");
   });
 });

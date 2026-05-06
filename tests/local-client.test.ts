@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { callQwen } from "../src/qwen-client.js";
+import { callLocalModel } from "../src/local-client.js";
 import type { Config } from "../src/config.js";
 
 const baseConfig: Config = {
@@ -32,10 +32,10 @@ beforeEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("callQwen", () => {
+describe("callLocalModel", () => {
   it("POSTs to /v1/chat/completions with the configured model", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("hi"));
-    await callQwen(
+    await callLocalModel(
       [{ role: "user", content: "say hi" }],
       baseConfig,
     );
@@ -56,7 +56,7 @@ describe("callQwen", () => {
 
   it("includes Authorization header when apiKey is set", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("ok"));
-    await callQwen(
+    await callLocalModel(
       [{ role: "user", content: "x" }],
       { ...baseConfig, apiKey: "sk-secret" },
     );
@@ -67,7 +67,7 @@ describe("callQwen", () => {
 
   it("omits Authorization header when apiKey is null", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("ok"));
-    await callQwen([{ role: "user", content: "x" }], baseConfig);
+    await callLocalModel([{ role: "user", content: "x" }], baseConfig);
     const init = fetchMock.mock.calls[0][1];
     const headers = init?.headers as Record<string, string>;
     expect(headers.Authorization).toBeUndefined();
@@ -75,7 +75,7 @@ describe("callQwen", () => {
 
   it("returns the assistant message text on success", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("the answer is 42"));
-    const result = await callQwen([{ role: "user", content: "x" }], baseConfig);
+    const result = await callLocalModel([{ role: "user", content: "x" }], baseConfig);
     expect(result).toBe("the answer is 42");
   });
 
@@ -84,7 +84,7 @@ describe("callQwen", () => {
       new Response("model not found", { status: 404 }),
     );
     await expect(
-      callQwen([{ role: "user", content: "x" }], baseConfig),
+      callLocalModel([{ role: "user", content: "x" }], baseConfig),
     ).rejects.toThrow(/404.*model not found/);
   });
 
@@ -93,7 +93,7 @@ describe("callQwen", () => {
       new Error("ECONNREFUSED"),
     );
     await expect(
-      callQwen([{ role: "user", content: "x" }], baseConfig),
+      callLocalModel([{ role: "user", content: "x" }], baseConfig),
     ).rejects.toThrow(/Cannot reach.*test-host:1234.*ECONNREFUSED/);
   });
 
@@ -108,7 +108,7 @@ describe("callQwen", () => {
         }),
     );
     await expect(
-      callQwen(
+      callLocalModel(
         [{ role: "user", content: "x" }],
         { ...baseConfig, requestTimeoutMs: 50 },
       ),
@@ -120,7 +120,7 @@ describe("callQwen", () => {
       new Response(JSON.stringify({ choices: [] }), { status: 200 }),
     );
     await expect(
-      callQwen([{ role: "user", content: "x" }], baseConfig),
+      callLocalModel([{ role: "user", content: "x" }], baseConfig),
     ).rejects.toThrow(/Unexpected response/);
   });
 
@@ -129,13 +129,13 @@ describe("callQwen", () => {
       new Response("not json {{{", { status: 200, headers: { "Content-Type": "application/json" } }),
     );
     await expect(
-      callQwen([{ role: "user", content: "x" }], baseConfig),
+      callLocalModel([{ role: "user", content: "x" }], baseConfig),
     ).rejects.toThrow(/returned 200 but unparseable JSON/);
   });
 
   it("forwards configured sampling params in the request body", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("ok"));
-    await callQwen(
+    await callLocalModel(
       [{ role: "user", content: "x" }],
       {
         ...baseConfig,
@@ -156,7 +156,7 @@ describe("callQwen", () => {
 
   it("uses configured maxTokens in the request body", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("ok"));
-    await callQwen(
+    await callLocalModel(
       [{ role: "user", content: "x" }],
       { ...baseConfig, maxTokens: 4096 },
     );
@@ -170,16 +170,16 @@ describe("callQwen", () => {
     // since the existing test suite passed without writing files, this is
     // implicit. Just confirm the call still works with null debugLogPath.
     vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("ok"));
-    const result = await callQwen([{ role: "user", content: "x" }], baseConfig);
+    const result = await callLocalModel([{ role: "user", content: "x" }], baseConfig);
     expect(result).toBe("ok");
   });
 
   it("writes a JSONL entry on success when debugLogPath is set", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "qwen-debug-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "local-debug-"));
     const logPath = join(tempDir, "debug.log");
     try {
       vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("hello world"));
-      await callQwen(
+      await callLocalModel(
         [{ role: "user", content: "say hi" }],
         { ...baseConfig, debugLogPath: logPath },
       );
@@ -198,14 +198,14 @@ describe("callQwen", () => {
   });
 
   it("writes a JSONL entry on error when debugLogPath is set", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "qwen-debug-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "local-debug-"));
     const logPath = join(tempDir, "debug.log");
     try {
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
         new Response("model not found", { status: 404 }),
       );
       await expect(
-        callQwen(
+        callLocalModel(
           [{ role: "user", content: "x" }],
           { ...baseConfig, debugLogPath: logPath },
         ),
@@ -222,13 +222,13 @@ describe("callQwen", () => {
   });
 
   it("appends successive JSONL entries on multiple calls", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "qwen-debug-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "local-debug-"));
     const logPath = join(tempDir, "debug.log");
     try {
       vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("first"));
-      await callQwen([{ role: "user", content: "a" }], { ...baseConfig, debugLogPath: logPath });
+      await callLocalModel([{ role: "user", content: "a" }], { ...baseConfig, debugLogPath: logPath });
       vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("second"));
-      await callQwen([{ role: "user", content: "b" }], { ...baseConfig, debugLogPath: logPath });
+      await callLocalModel([{ role: "user", content: "b" }], { ...baseConfig, debugLogPath: logPath });
       const log = readFileSync(logPath, "utf8");
       const lines = log.trim().split("\n");
       expect(lines).toHaveLength(2);

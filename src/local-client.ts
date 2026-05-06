@@ -46,7 +46,7 @@ function isAbortError(err: unknown): boolean {
   return (err as { name?: string } | null)?.name === "AbortError";
 }
 
-async function callQwenInner(
+async function callLocalModelInner(
   messages: ChatMessage[],
   config: Config,
   url: string,
@@ -85,7 +85,7 @@ async function callQwenInner(
     } catch (err) {
       if (isAbortError(err)) {
         throw new Error(
-          `Qwen request timed out after ${config.requestTimeoutMs}ms (url: ${url})`,
+          `Local model request timed out after ${config.requestTimeoutMs}ms (url: ${url})`,
         );
       }
       throw new Error(
@@ -100,7 +100,7 @@ async function callQwenInner(
       } catch (err) {
         if (isAbortError(err)) {
           throw new Error(
-            `Qwen request timed out after ${config.requestTimeoutMs}ms (url: ${url})`,
+            `Local model request timed out after ${config.requestTimeoutMs}ms (url: ${url})`,
           );
         }
         throw err;
@@ -116,7 +116,7 @@ async function callQwenInner(
     } catch (err) {
       if (isAbortError(err)) {
         throw new Error(
-          `Qwen request timed out after ${config.requestTimeoutMs}ms (url: ${url})`,
+          `Local model request timed out after ${config.requestTimeoutMs}ms (url: ${url})`,
         );
       }
       throw new Error(
@@ -136,14 +136,14 @@ async function callQwenInner(
   }
 }
 
-export async function callQwen(
+export async function callLocalModel(
   messages: ChatMessage[],
   config: Config,
 ): Promise<string> {
   const url = `${config.baseUrl}/v1/chat/completions`;
   const requestSummary = { url, model: config.model, messages };
   try {
-    const content = await callQwenInner(messages, config, url);
+    const content = await callLocalModelInner(messages, config, url);
     writeDebugLog(config, { request: requestSummary, response: { ok: true, content } });
     return content;
   } catch (err) {

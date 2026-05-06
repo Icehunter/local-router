@@ -53,81 +53,81 @@ function readConfigFile(): RawConfig {
 
 function applyEnvOverrides(raw: RawConfig): RawConfig {
   const out: RawConfig = { ...raw };
-  if (process.env.QWEN_BASE_URL) out.baseUrl = process.env.QWEN_BASE_URL;
-  if (process.env.QWEN_MODEL) out.model = process.env.QWEN_MODEL;
-  if (process.env.QWEN_API_KEY) out.apiKey = process.env.QWEN_API_KEY;
-  if (process.env.QWEN_TOKEN_BUDGET !== undefined) {
-    const n = Number(process.env.QWEN_TOKEN_BUDGET);
+  if (process.env.LOCAL_LLM_BASE_URL) out.baseUrl = process.env.LOCAL_LLM_BASE_URL;
+  if (process.env.LOCAL_LLM_MODEL) out.model = process.env.LOCAL_LLM_MODEL;
+  if (process.env.LOCAL_LLM_API_KEY) out.apiKey = process.env.LOCAL_LLM_API_KEY;
+  if (process.env.LOCAL_LLM_TOKEN_BUDGET !== undefined) {
+    const n = Number(process.env.LOCAL_LLM_TOKEN_BUDGET);
     if (!Number.isFinite(n)) {
       throw new Error(
-        `QWEN_TOKEN_BUDGET must be a number, got: "${process.env.QWEN_TOKEN_BUDGET}"`,
+        `LOCAL_LLM_TOKEN_BUDGET must be a number, got: "${process.env.LOCAL_LLM_TOKEN_BUDGET}"`,
       );
     }
     out.tokenBudget = n;
   }
-  if (process.env.QWEN_REQUEST_TIMEOUT_MS !== undefined) {
-    const n = Number(process.env.QWEN_REQUEST_TIMEOUT_MS);
+  if (process.env.LOCAL_LLM_REQUEST_TIMEOUT_MS !== undefined) {
+    const n = Number(process.env.LOCAL_LLM_REQUEST_TIMEOUT_MS);
     if (!Number.isFinite(n)) {
       throw new Error(
-        `QWEN_REQUEST_TIMEOUT_MS must be a number, got: "${process.env.QWEN_REQUEST_TIMEOUT_MS}"`,
+        `LOCAL_LLM_REQUEST_TIMEOUT_MS must be a number, got: "${process.env.LOCAL_LLM_REQUEST_TIMEOUT_MS}"`,
       );
     }
     out.requestTimeoutMs = n;
   }
-  if (process.env.QWEN_MAX_TOKENS !== undefined) {
-    const raw = process.env.QWEN_MAX_TOKENS;
+  if (process.env.LOCAL_LLM_MAX_TOKENS !== undefined) {
+    const raw = process.env.LOCAL_LLM_MAX_TOKENS;
     const n = Number(raw);
     if (!Number.isFinite(n)) {
-      throw new Error(`QWEN_MAX_TOKENS must be a number, got: "${raw}"`);
+      throw new Error(`LOCAL_LLM_MAX_TOKENS must be a number, got: "${raw}"`);
     }
     out.maxTokens = n;
   }
-  if (process.env.QWEN_TEMPERATURE !== undefined) {
-    const n = Number(process.env.QWEN_TEMPERATURE);
+  if (process.env.LOCAL_LLM_TEMPERATURE !== undefined) {
+    const n = Number(process.env.LOCAL_LLM_TEMPERATURE);
     if (!Number.isFinite(n)) {
       throw new Error(
-        `QWEN_TEMPERATURE must be a number, got: "${process.env.QWEN_TEMPERATURE}"`,
+        `LOCAL_LLM_TEMPERATURE must be a number, got: "${process.env.LOCAL_LLM_TEMPERATURE}"`,
       );
     }
     out.temperature = n;
   }
-  if (process.env.QWEN_TOP_P !== undefined) {
-    const n = Number(process.env.QWEN_TOP_P);
+  if (process.env.LOCAL_LLM_TOP_P !== undefined) {
+    const n = Number(process.env.LOCAL_LLM_TOP_P);
     if (!Number.isFinite(n)) {
       throw new Error(
-        `QWEN_TOP_P must be a number, got: "${process.env.QWEN_TOP_P}"`,
+        `LOCAL_LLM_TOP_P must be a number, got: "${process.env.LOCAL_LLM_TOP_P}"`,
       );
     }
     out.topP = n;
   }
-  if (process.env.QWEN_TOP_K !== undefined) {
-    const n = Number(process.env.QWEN_TOP_K);
+  if (process.env.LOCAL_LLM_TOP_K !== undefined) {
+    const n = Number(process.env.LOCAL_LLM_TOP_K);
     if (!Number.isFinite(n)) {
       throw new Error(
-        `QWEN_TOP_K must be a number, got: "${process.env.QWEN_TOP_K}"`,
+        `LOCAL_LLM_TOP_K must be a number, got: "${process.env.LOCAL_LLM_TOP_K}"`,
       );
     }
     out.topK = n;
   }
-  if (process.env.QWEN_MIN_P !== undefined) {
-    const n = Number(process.env.QWEN_MIN_P);
+  if (process.env.LOCAL_LLM_MIN_P !== undefined) {
+    const n = Number(process.env.LOCAL_LLM_MIN_P);
     if (!Number.isFinite(n)) {
       throw new Error(
-        `QWEN_MIN_P must be a number, got: "${process.env.QWEN_MIN_P}"`,
+        `LOCAL_LLM_MIN_P must be a number, got: "${process.env.LOCAL_LLM_MIN_P}"`,
       );
     }
     out.minP = n;
   }
-  if (process.env.QWEN_REPEAT_PENALTY !== undefined) {
-    const raw = process.env.QWEN_REPEAT_PENALTY;
+  if (process.env.LOCAL_LLM_REPEAT_PENALTY !== undefined) {
+    const raw = process.env.LOCAL_LLM_REPEAT_PENALTY;
     const n = Number(raw);
     if (!Number.isFinite(n)) {
-      throw new Error(`QWEN_REPEAT_PENALTY must be a number, got: "${raw}"`);
+      throw new Error(`LOCAL_LLM_REPEAT_PENALTY must be a number, got: "${raw}"`);
     }
     out.repeatPenalty = n;
   }
-  if (process.env.QWEN_DEBUG_LOG_PATH !== undefined) {
-    out.debugLogPath = process.env.QWEN_DEBUG_LOG_PATH || null;
+  if (process.env.LOCAL_LLM_DEBUG_LOG_PATH !== undefined) {
+    out.debugLogPath = process.env.LOCAL_LLM_DEBUG_LOG_PATH || null;
   }
   return out;
 }
@@ -140,8 +140,8 @@ export function loadConfig(): Config {
       .map((i) => `  - ${i.path.join(".") || "(root)"}: ${i.message}`)
       .join("\n");
     throw new Error(
-      `Invalid Qwen plugin config:\n${issues}\n\n` +
-        `Set baseUrl and model via config.json (\${CLAUDE_PLUGIN_ROOT}/config.json) or env vars QWEN_BASE_URL and QWEN_MODEL.`,
+      `Invalid local model plugin config:\n${issues}\n\n` +
+        `Set baseUrl and model via config.json (\${CLAUDE_PLUGIN_ROOT}/config.json) or env vars LOCAL_LLM_BASE_URL and LOCAL_LLM_MODEL.`,
     );
   }
   return result.data;

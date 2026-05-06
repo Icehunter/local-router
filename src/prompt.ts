@@ -25,17 +25,18 @@ const FORMAT_DIRECTIVES: Record<OutputFormat, string> = {
 };
 
 export const REVIEW_REMINDER =
-  "Before applying any of the code above, dispatch a Sonnet subagent via the Task tool to review it against:\n" +
+  "Before applying any of the code above, review it with your configured review path against:\n" +
   "  - the requirements you sent in the prompt\n" +
   "  - the project conventions in CLAUDE.md and the README\n" +
   "  - obvious bugs, missing imports, or syntax errors\n" +
-  "Do not call Edit or Write until the review returns. " +
+  "If your environment has a Task or subagent tool, use the review/planning model configured for that path. " +
+  "Do not call Edit or Write until the review is complete. " +
   "Skip the review only when ALL THREE: (a) the output is fewer than 5 lines, (b) it is a complete self-contained snippet (not a partial edit to existing code), and (c) the review work would clearly cost more than the change's blast radius. " +
   "If the review surfaces 1-2 small issues, fix them yourself when applying the Edit. " +
-  "If it surfaces structural problems or multiple issues, regenerate via qwen_implement with the feedback baked into the prompt.";
+  "If it surfaces structural problems or multiple issues, regenerate via local_implement with the feedback baked into the prompt.";
 
-export function wrapWithReviewReminder(qwenOutput: string): string {
-  return `<qwen_output>\n${qwenOutput}\n</qwen_output>\n\n${REVIEW_REMINDER}`;
+export function wrapWithReviewReminder(localOutput: string): string {
+  return `<local_output>\n${localOutput}\n</local_output>\n\n${REVIEW_REMINDER}`;
 }
 
 export function buildMessages(input: BuildMessagesInput): ChatMessage[] {

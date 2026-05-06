@@ -1,7 +1,7 @@
 {
-  "name": "claude-qwen-router",
+  "name": "claude-local-router",
   "version": "0.1.0",
-  "description": "Claude Code plugin that routes implementation work to a local OpenAI-compatible LLM (Qwen, etc.) over the LAN.",
+  "description": "Claude Code plugin that routes implementation work to a local OpenAI-compatible LLM (local model, etc.) over the LAN.",
   "type": "module",
   "private": true,
   "engines": {
