@@ -103,7 +103,7 @@ async function main(): Promise<void> {
     if (typeof args.prompt !== "string" || args.prompt.length === 0) {
       throw new Error("`prompt` is required and must be a non-empty string");
     }
-    const system = typeof args.system === "string" ? args.system : undefined;
+    const system = typeof args.system === "string" && args.system !== "" ? args.system : undefined;
     const output_format =
       args.output_format === "diff" ||
       args.output_format === "explanation" ||
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
     const messages = buildMessages({ prompt: args.prompt, system, output_format });
     const totalText = messages.map((m) => m.content).join("\n");
     const estimated = estimateTokens(totalText);
-    if (estimated > config.tokenBudget) {
+    if (estimated + config.maxTokens > config.tokenBudget) {
       throw new Error(
         `Prompt exceeds tokenBudget (estimated ${estimated} tokens, budget ${config.tokenBudget}). ` +
           `Reduce scope or raise tokenBudget in config.`,

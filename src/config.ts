@@ -53,9 +53,9 @@ function readConfigFile(): RawConfig {
 
 function applyEnvOverrides(raw: RawConfig): RawConfig {
   const out: RawConfig = { ...raw };
-  if (process.env.LOCAL_LLM_BASE_URL) out.baseUrl = process.env.LOCAL_LLM_BASE_URL;
-  if (process.env.LOCAL_LLM_MODEL) out.model = process.env.LOCAL_LLM_MODEL;
-  if (process.env.LOCAL_LLM_API_KEY) out.apiKey = process.env.LOCAL_LLM_API_KEY;
+  if (process.env.LOCAL_LLM_BASE_URL !== undefined) out.baseUrl = process.env.LOCAL_LLM_BASE_URL;
+  if (process.env.LOCAL_LLM_MODEL !== undefined) out.model = process.env.LOCAL_LLM_MODEL;
+  if (process.env.LOCAL_LLM_API_KEY !== undefined) out.apiKey = process.env.LOCAL_LLM_API_KEY || null;
   if (process.env.LOCAL_LLM_TOKEN_BUDGET !== undefined) {
     const n = Number(process.env.LOCAL_LLM_TOKEN_BUDGET);
     if (!Number.isFinite(n)) {

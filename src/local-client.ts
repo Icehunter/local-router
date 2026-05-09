@@ -4,6 +4,8 @@ import type { ChatMessage } from "./prompt.js";
 
 const TRUNCATE_BYTES = 8192;
 
+let debugLogWarnedOnce = false;
+
 function truncate(text: string): string {
   const buf = Buffer.from(text, "utf8");
   if (buf.byteLength <= TRUNCATE_BYTES) return text;
@@ -37,8 +39,11 @@ function writeDebugLog(
   }) + "\n";
   try {
     appendFileSync(config.debugLogPath, line, "utf8");
-  } catch {
-    // Debug log failures must never break the actual call. Swallow.
+  } catch (err) {
+    if (!debugLogWarnedOnce) {
+      debugLogWarnedOnce = true;
+      process.stderr.write(`[local-router] debug log write failed (${config.debugLogPath}): ${(err as Error).message}\n`);
+    }
   }
 }
 
