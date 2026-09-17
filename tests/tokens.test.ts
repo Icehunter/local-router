@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { estimateTokens, isOverBudget } from "../src/tokens.js";
+import { estimateTokens } from "../src/tokens.js";
 
 describe("estimateTokens", () => {
   it("returns 0 for empty string", () => {
@@ -12,17 +12,8 @@ describe("estimateTokens", () => {
   });
 
   it("counts bytes, not chars (multi-byte safe)", () => {
-    // "✓" is 3 bytes in UTF-8
-    expect(estimateTokens("✓")).toBe(1); // 3 bytes / 4 = 0.75 -> 1
-  });
-});
-
-describe("isOverBudget", () => {
-  it("returns false when at or under budget", () => {
-    expect(isOverBudget("abcd", 1)).toBe(false);
-  });
-
-  it("returns true when over budget", () => {
-    expect(isOverBudget("abcde", 1)).toBe(true);
+    // 4 chars, 12 UTF-8 bytes. A char-length implementation would say 1.
+    expect("✓✓✓✓".length).toBe(4);
+    expect(estimateTokens("✓✓✓✓")).toBe(3);
   });
 });

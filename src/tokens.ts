@@ -6,7 +6,3 @@ export function estimateTokens(text: string): number {
   const bytes = Buffer.byteLength(text, "utf8");
   return Math.ceil(bytes / 4);
 }
-
-export function isOverBudget(text: string, budget: number): boolean {
-  return estimateTokens(text) > budget;
-}

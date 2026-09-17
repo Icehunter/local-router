@@ -1,5 +1,5 @@
 {
-  "name": "claude-qwen-router",
+  "name": "claude-local-router",
   "description": "Route implementation work to a local OpenAI-compatible LLM (Qwen on llama.cpp / LM Studio / Ollama / vLLM) so Claude Code can delegate code-writing while planning and review stay on Claude.",
   "version": "0.1.0"
 }

@@ -10,5 +10,6 @@
   "topK": 20,
   "minP": 0.05,
   "repeatPenalty": 1.1,
-  "debugLogPath": null
+  "debugLogPath": null,
+  "enableThinking": null
 }

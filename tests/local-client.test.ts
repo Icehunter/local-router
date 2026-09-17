@@ -1,5 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, appendFileSync, statSync, writeFileSync, chmodSync } from "node:fs";
+
+// Wraps the real implementation so writes still happen, but calls are observable.
+vi.mock("node:fs", async () => {
+  const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+  return { ...actual, appendFileSync: vi.fn(actual.appendFileSync) };
+});
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { callLocalModel } from "../src/local-client.js";
@@ -18,6 +24,8 @@ const baseConfig: Config = {
   repeatPenalty: 1.1,
   maxTokens: 16000,
   debugLogPath: null,
+  enableThinking: null,
+  toolDescription: null,
 };
 
 const ok = (text: string) =>
@@ -76,7 +84,7 @@ describe("callLocalModel", () => {
   it("returns the assistant message text on success", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("the answer is 42"));
     const result = await callLocalModel([{ role: "user", content: "x" }], baseConfig);
-    expect(result).toBe("the answer is 42");
+    expect(result.content).toBe("the answer is 42");
   });
 
   it("throws on non-2xx with status and body in message", async () => {
@@ -165,13 +173,11 @@ describe("callLocalModel", () => {
   });
 
   it("does not write to disk when debugLogPath is null", async () => {
-    // The default (debugLogPath: null) should never call appendFileSync.
-    // We can't easily verify "no fs write" without mocking node:fs, but
-    // since the existing test suite passed without writing files, this is
-    // implicit. Just confirm the call still works with null debugLogPath.
+    vi.mocked(appendFileSync).mockClear();
     vi.spyOn(globalThis, "fetch").mockResolvedValue(ok("ok"));
     const result = await callLocalModel([{ role: "user", content: "x" }], baseConfig);
-    expect(result).toBe("ok");
+    expect(result.content).toBe("ok");
+    expect(appendFileSync).not.toHaveBeenCalled();
   });
 
   it("writes a JSONL entry on success when debugLogPath is set", async () => {
@@ -239,5 +245,273 @@ describe("callLocalModel", () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("callLocalModel — response validation", () => {
+  const json200 = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  it("rejects an empty completion instead of reporting success", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json200({ choices: [{ finish_reason: "stop", message: { role: "assistant", content: "" } }] }),
+    );
+    await expect(
+      callLocalModel([{ role: "user", content: "x" }], baseConfig),
+    ).rejects.toThrow(/empty completion \(finish_reason: stop\)/);
+  });
+
+  it("rejects a whitespace-only completion", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json200({ choices: [{ message: { content: "   \n\t " } }] }),
+    );
+    await expect(
+      callLocalModel([{ role: "user", content: "x" }], baseConfig),
+    ).rejects.toThrow(/empty completion/);
+  });
+
+  it("rejects a JSON null body without throwing a raw TypeError", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(json200(null));
+    const err = (await callLocalModel([{ role: "user", content: "x" }], baseConfig).catch(
+      (e: Error) => e,
+    )) as Error;
+    expect(err).toBeInstanceOf(Error);
+    expect(err.constructor.name).toBe("Error"); // not TypeError
+    expect(err.message).toMatch(/non-object body/);
+  });
+
+  it("rejects a JSON array body", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(json200([1, 2, 3]));
+    await expect(
+      callLocalModel([{ role: "user", content: "x" }], baseConfig),
+    ).rejects.toThrow(/no choices\[0\]\.message\.content/);
+  });
+
+  it("surfaces finish_reason so a max_tokens truncation is visible", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json200({ choices: [{ finish_reason: "length", message: { content: "half a func" } }] }),
+    );
+    const result = await callLocalModel([{ role: "user", content: "x" }], baseConfig);
+    expect(result.content).toBe("half a func");
+    expect(result.finishReason).toBe("length");
+  });
+
+  it("reports finishReason null when upstream omits it", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json200({ choices: [{ message: { content: "done" } }] }),
+    );
+    expect((await callLocalModel([{ role: "user", content: "x" }], baseConfig)).finishReason)
+      .toBeNull();
+  });
+
+  it("truncates the debug log on a codepoint boundary, not mid-sequence", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "local-trunc-"));
+    const logPath = join(tempDir, "debug.log");
+    try {
+      // 3-byte chars: 8192 is not a multiple of 3, so a raw byte cut splits one.
+      const wide = "✓".repeat(4000);
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(json200({ choices: [{ message: { content: wide } }] }));
+      await callLocalModel(
+        [{ role: "user", content: "x" }],
+        { ...baseConfig, debugLogPath: logPath },
+      );
+      const entry = JSON.parse(readFileSync(logPath, "utf8").trim());
+      expect(entry.response.content).not.toContain("�");
+      expect(entry.response.content.endsWith("...[truncated]")).toBe(true);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("creates the debug log with owner-only permissions", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "local-mode-"));
+    const logPath = join(tempDir, "debug.log");
+    try {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(json200({ choices: [{ message: { content: "ok" } }] }));
+      await callLocalModel(
+        [{ role: "user", content: "secret source" }],
+        { ...baseConfig, debugLogPath: logPath },
+      );
+      expect(statSync(logPath).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("callLocalModel — abort during body read", () => {
+  function abortError(): Error {
+    const e = new Error("The operation was aborted");
+    e.name = "AbortError";
+    return e;
+  }
+
+  it("reports a timeout when the error body read is aborted", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false,
+      status: 500,
+      text: () => Promise.reject(abortError()),
+    } as unknown as Response);
+    await expect(
+      callLocalModel([{ role: "user", content: "x" }], { ...baseConfig, requestTimeoutMs: 1234 }),
+    ).rejects.toThrow(/timed out after 1234ms/);
+  });
+
+  it("reports a timeout when the JSON body read is aborted", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(abortError()),
+    } as unknown as Response);
+    await expect(
+      callLocalModel([{ role: "user", content: "x" }], { ...baseConfig, requestTimeoutMs: 1234 }),
+    ).rejects.toThrow(/timed out after 1234ms/);
+  });
+
+  it("a non-abort JSON parse failure is reported as unparseable, not as a timeout", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+    } as unknown as Response);
+    await expect(
+      callLocalModel([{ role: "user", content: "x" }], baseConfig),
+    ).rejects.toThrow(/returned 200 but unparseable JSON: Unexpected token </);
+  });
+});
+
+describe("callLocalModel — debug log failure warnings", () => {
+  it("warns again after a working stretch, instead of latching for the process", async () => {
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    const good = mkdtempSync(join(tmpdir(), "local-relatch-"));
+    const goodPath = join(good, "debug.log");
+    const badPath = join(good, "missing-dir", "debug.log");
+    try {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+        new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+      const call = (p: string) =>
+        callLocalModel([{ role: "user", content: "x" }], { ...baseConfig, debugLogPath: p });
+
+      await call(badPath); // fails -> warns, latch set
+      await call(badPath); // fails -> silent (warn-once still holds)
+      await call(goodPath); // succeeds -> re-arms
+      await call(badPath); // fails again -> must warn a second time
+
+      const warnings = warn.mock.calls
+        .map((c) => String(c[0]))
+        .filter((m) => m.includes("debug log write failed"));
+      expect(warnings).toHaveLength(2);
+    } finally {
+      warn.mockRestore();
+      rmSync(good, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("callLocalModel — enableThinking passthrough", () => {
+  const okBody = () =>
+    new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+
+  it("omits chat_template_kwargs entirely when enableThinking is null", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockImplementation(async () => okBody());
+    await callLocalModel([{ role: "user", content: "x" }], baseConfig);
+    const sent = JSON.parse(f.mock.calls[0][1]?.body as string);
+    expect(sent).not.toHaveProperty("chat_template_kwargs");
+  });
+
+  it("sends enable_thinking false when disabled", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockImplementation(async () => okBody());
+    await callLocalModel([{ role: "user", content: "x" }], { ...baseConfig, enableThinking: false });
+    const sent = JSON.parse(f.mock.calls[0][1]?.body as string);
+    expect(sent.chat_template_kwargs).toEqual({ enable_thinking: false });
+  });
+
+  it("sends enable_thinking true when enabled", async () => {
+    const f = vi.spyOn(globalThis, "fetch").mockImplementation(async () => okBody());
+    await callLocalModel([{ role: "user", content: "x" }], { ...baseConfig, enableThinking: true });
+    const sent = JSON.parse(f.mock.calls[0][1]?.body as string);
+    expect(sent.chat_template_kwargs).toEqual({ enable_thinking: true });
+  });
+});
+
+describe("callLocalModel — remaining response and logging defects", () => {
+  const json200 = (b: unknown) => new Response(JSON.stringify(b), {
+    status: 200, headers: { "Content-Type": "application/json" } });
+
+  it("blames max_tokens, not the prompt, when a truncated completion is whitespace-only", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      json200({ choices: [{ finish_reason: "length", message: { content: "   \n " } }] }));
+    await expect(
+      callLocalModel([{ role: "user", content: "x" }], baseConfig),
+    ).rejects.toThrow(/stopped at max_tokens .*before producing any output/);
+  });
+
+  it("still blames the prompt when an empty completion stopped normally", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+      json200({ choices: [{ finish_reason: "stop", message: { content: "" } }] }));
+    await expect(
+      callLocalModel([{ role: "user", content: "x" }], baseConfig),
+    ).rejects.toThrow(/produced no output/);
+  });
+
+  it("attributes a non-abort failure reading an error body to the upstream", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue({
+      ok: false, status: 503,
+      text: () => Promise.reject(new Error("socket hang up")),
+    } as unknown as Response);
+    const err = (await callLocalModel([{ role: "user", content: "x" }], baseConfig)
+      .catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/Upstream returned 503/);
+    expect(err.message).toMatch(/socket hang up/);
+  });
+
+  it("records finish_reason in the debug log", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-fr-"));
+    const logPath = join(dir, "d.log");
+    try {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+        json200({ choices: [{ finish_reason: "length", message: { content: "cut" } }] }));
+      await callLocalModel([{ role: "user", content: "x" }], { ...baseConfig, debugLogPath: logPath });
+      const e = JSON.parse(readFileSync(logPath, "utf8").trim());
+      expect(e.response.finishReason).toBe("length");
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("tightens permissions on a debug log that already exists", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-mode2-"));
+    const logPath = join(dir, "d.log");
+    try {
+      writeFileSync(logPath, "", { mode: 0o644 });
+      chmodSync(logPath, 0o644);
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+        json200({ choices: [{ message: { content: "ok" } }] }));
+      await callLocalModel([{ role: "user", content: "x" }], { ...baseConfig, debugLogPath: logPath });
+      expect(statSync(logPath).mode & 0o777).toBe(0o600);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("truncates prompt-side content too, not just the response", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "local-ptrunc-"));
+    const logPath = join(dir, "d.log");
+    try {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () =>
+        json200({ choices: [{ message: { content: "ok" } }] }));
+      const huge = "z".repeat(20000);
+      await callLocalModel([{ role: "user", content: huge }], { ...baseConfig, debugLogPath: logPath });
+      const e = JSON.parse(readFileSync(logPath, "utf8").trim());
+      const logged = e.request.messages[0].content as string;
+      expect(logged.length).toBeLessThan(huge.length);
+      expect(logged.endsWith("...[truncated]")).toBe(true);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
