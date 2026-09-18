@@ -26,6 +26,12 @@ instance declares its own list in `tasks`, and the published `task` enum reflect
 `classify` requires at least two `examples` — this is the measured few-shot requirement
 from the table above, now enforced by the schema rather than by prose.
 
+`summarize`, `extract` and `review` take `max_lines`. Measured: asked for four lines in the
+prompt text, the 4B returned eight; given `max_lines: 4`, it returned four. The cap only
+works as a literal digit in the final instruction — an instruction that refers to a count
+stated earlier in the prompt is indirection the model does not resolve. `summarize`
+defaults to 10; the other two have no default.
+
 ### What the CPU helper may and may not be used for
 
 Measured on this exact model (`qwen-cpu-helper`, Qwen3-4B-Instruct-2507 Q4_K_M, n_ctx

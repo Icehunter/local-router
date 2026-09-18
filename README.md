@@ -36,6 +36,13 @@ Omitting it reproduces the plugin's original code-generation behaviour.
 as alternating user/assistant turns. Without examples a small model returns the same
 label for every input, so the argument is required rather than recommended.
 
+`summarize`, `extract` and `review` accept `max_lines`, a positive integer that bounds the
+output to that many lines. `summarize` defaults to 10 when you omit it; the other two have
+no default, because the number of symbols or defects is whatever it is. Other tasks reject
+the argument. The cap reaches the model as a literal count in the last sentence of the
+prompt: a small model will not reliably resolve an instruction that refers to a number
+stated elsewhere, so the digit has to be in the instruction itself.
+
 Precedence for every setting is **explicit argument > task profile > config default**.
 An output cap only ever lowers `maxTokens`; it never raises it.
 
