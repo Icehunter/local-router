@@ -50,6 +50,7 @@ const BASE_TOOL_PROPERTIES = {
 const EXAMPLES_PROPERTY = {
   type: "array",
   minItems: 2,
+  maxItems: 50,
   items: {
     type: "object",
     properties: {
@@ -74,7 +75,8 @@ const IMPLEMENT_TOOL_DEFINITION = {
 const DIRECT_TOOL_DEFINITION = {
   name: TOOL_DIRECT,
   description:
-    "Send a prompt to the configured local model and return the raw response without review wrapping. " +
+    "Send a prompt to the configured local model and return its response, by default without review wrapping. " +
+    "A task whose profile wraps — implement and fix — still wraps unless you override it with `mode` or `include_review_reminder`. " +
     "Use for direct local mode, explanations, and rate-limit escape-hatch queries.",
 };
 
@@ -132,6 +134,11 @@ const EXAMPLES_REQUIRED =
   '`examples` is required when task is "classify" and must contain at least 2 entries. ' +
   "Without examples this model returns the same label for every input.";
 
+// 3000 examples was accepted before this cap and produced a 6002-message request:
+// the token-budget check counts content bytes, not per-message chat-template
+// overhead, so many tiny examples slip past it.
+const MAX_EXAMPLES = 50;
+
 /** Keeps a hostile or accidental multi-KB argument out of the error response. */
 function short(value: unknown): string {
   const s = JSON.stringify(value) ?? String(value);
@@ -176,9 +183,14 @@ export async function handleToolCall(
   // unvalidated `mode`: the caller asks for something and quietly does not get it.
   const unknown = Object.keys(args).filter((k) => !KNOWN_ARGS.has(k)).sort();
   if (unknown.length > 0) {
+    // `examples` stays in KNOWN_ARGS regardless of gating, so it is still recognized
+    // and gets its own "only valid with classify" error — but listing it as valid
+    // advice on an instance whose published schema excludes classify is a dead end.
+    const examplesUsable = config.tasks === null || config.tasks.includes("classify");
+    const listedArgs = [...KNOWN_ARGS].filter((a) => a !== "examples" || examplesUsable);
     throw new Error(
       `Unrecognized argument(s): ${unknown.join(", ")}. ` +
-        `Valid arguments: ${[...KNOWN_ARGS].join(", ")}.`,
+        `Valid arguments: ${listedArgs.join(", ")}.`,
     );
   }
 
@@ -239,6 +251,11 @@ export async function handleToolCall(
     if (!Array.isArray(args.examples) || args.examples.length < 2) {
       throw new Error(EXAMPLES_REQUIRED);
     }
+    if (args.examples.length > MAX_EXAMPLES) {
+      throw new Error(
+        `\`examples\` accepts at most ${MAX_EXAMPLES} entries; got ${args.examples.length}.`,
+      );
+    }
     args.examples.forEach((ex: unknown, i: number) => {
       const e = ex as Partial<FewShotExample>;
       if (
@@ -249,6 +266,16 @@ export async function handleToolCall(
         throw new Error(
           `\`examples[${i}]\` must be an object with non-empty string \`input\` and ` +
             `\`output\`; got: ${short(ex)}`,
+        );
+      }
+      // Matches the top-level argument check: a key beyond the two recognized
+      // ones is silently dropped otherwise, the same class of bug as an
+      // unvalidated `mode`.
+      const unknownKeys = Object.keys(ex as object).filter((k) => k !== "input" && k !== "output");
+      if (unknownKeys.length > 0) {
+        throw new Error(
+          `\`examples[${i}]\` has unrecognized key(s): ${unknownKeys.join(", ")}. ` +
+            `Only \`input\` and \`output\` are valid; got: ${short(ex)}`,
         );
       }
     });

@@ -358,6 +358,29 @@ describe("handleToolCall — task validation and gating", () => {
     expect(err.message).toMatch(/task/);
     expect(err.message).toMatch(/examples/);
   });
+
+  it("omits examples from the valid-argument list when this instance cannot use it", async () => {
+    const cfg: Config = { ...baseConfig, tasks: ["summarize"] };
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", taks: "fix" }, cfg,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).not.toMatch(/examples/);
+  });
+
+  it("still lists examples as valid when tasks is null", async () => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", taks: "fix" }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/examples/);
+  });
+
+  it("still lists examples as valid when classify is among the accepted tasks", async () => {
+    const cfg: Config = { ...baseConfig, tasks: ["summarize", "classify"] };
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", taks: "fix" }, cfg,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/examples/);
+  });
 });
 
 describe("handleToolCall — classify examples", () => {
@@ -393,9 +416,12 @@ describe("handleToolCall — classify examples", () => {
   });
 
   it("rejects a malformed example entry without echoing an unbounded value", async () => {
+    // The 5000-char payload sits at examples[0], the entry that actually fails
+    // validation first — otherwise the short() truncation this test names never
+    // fires and the length assertion passes trivially.
     const err = (await handleToolCall(
       "local_direct",
-      { prompt: "x", task: "classify", examples: [{ input: "a", output: "" }, { input: "b".repeat(5000), output: "B" }] },
+      { prompt: "x", task: "classify", examples: [{ input: "b".repeat(5000), output: "" }, { input: "a", output: "B" }] },
       baseConfig,
     ).catch((e: Error) => e)) as Error;
     expect(err.message).toMatch(/`examples\[0\]` must be an object with non-empty string/);
@@ -411,6 +437,37 @@ describe("handleToolCall — classify examples", () => {
     expect(body.messages.map((m: { role: string }) => m.role)).toEqual([
       "system", "user", "assistant", "user", "assistant", "user",
     ]);
+    expect(body.messages[1].content).toBe(twoExamples[0].input);
+    expect(body.messages[2].content).toBe(twoExamples[0].output);
+    expect(body.messages[3].content).toBe(twoExamples[1].input);
+    expect(body.messages[4].content).toBe(twoExamples[1].output);
+  });
+
+  it("accepts exactly 50 examples", async () => {
+    mockUpstream("TRIVIAL");
+    const fifty = Array.from({ length: 50 }, (_, i) => ({ input: `in ${i}`, output: `out ${i}` }));
+    await expect(handleToolCall(
+      "local_direct", { prompt: "x", task: "classify", examples: fifty }, baseConfig,
+    )).resolves.toBeDefined();
+  });
+
+  it("rejects 51 examples, naming the cap", async () => {
+    const fiftyOne = Array.from({ length: 51 }, (_, i) => ({ input: `in ${i}`, output: `out ${i}` }));
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "classify", examples: fiftyOne }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/at most 50 entries/);
+    expect(err.message).toMatch(/got 51/);
+  });
+
+  it("rejects an example entry with an unrecognized key", async () => {
+    const err = (await handleToolCall(
+      "local_direct",
+      { prompt: "x", task: "classify", examples: [{ ...twoExamples[0], extra: 1 }, twoExamples[1]] },
+      baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/`examples\[0\]`/);
+    expect(err.message).toMatch(/extra/);
   });
 });
 
@@ -422,11 +479,12 @@ describe("handleToolCall — task sampling overrides", () => {
     expect(body.temperature).toBe(0);
   });
 
-  it("sends the config temperature when there is no task", async () => {
+  it("sends the config temperature and maxTokens when there is no task", async () => {
     const fetchSpy = mockUpstream("ok");
     await handleToolCall("local_direct", { prompt: "x" }, baseConfig);
     const body = JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
     expect(body.temperature).toBe(0.7);
+    expect(body.max_tokens).toBe(16000);
   });
 
   it("lowers max_tokens to the profile cap", async () => {
@@ -449,18 +507,22 @@ describe("handleToolCall — task sampling overrides", () => {
   });
 
   it("reserves only the effective maxTokens in the budget precondition", async () => {
-    // 500 budget: the 1000 config ceiling would reject this (1000 + prompt > 500);
-    // the classify profile's 50-token cap does not.
-    const cfg: Config = { ...baseConfig, tokenBudget: 500, maxTokens: 1000 };
-    mockUpstream("TRIVIAL");
+    // 680384 bytes of ASCII puts estimateTokens (ceil(bytes/4)) at ~170K on
+    // baseConfig's stock tokenBudget/maxTokens (180000/16000) — a pair loadConfig
+    // actually accepts, unlike an inflated maxTokens >= tokenBudget config.
+    // No task: ~170K + config.maxTokens (16000) clears the 180000 budget → rejected.
+    // task "review": the profile caps maxTokens at 1500, so ~170K + 1500 fits → accepted.
+    const bigPrompt = "a".repeat(680384);
+    const err = (await handleToolCall(
+      "local_direct", { prompt: bigPrompt }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/Prompt exceeds tokenBudget/);
+
+    mockUpstream("NONE");
     const res = await handleToolCall(
-      "local_direct",
-      { prompt: "x", task: "classify", examples: [
-        { input: "a", output: "A" }, { input: "b", output: "B" },
-      ] },
-      cfg,
+      "local_direct", { prompt: bigPrompt, task: "review" }, baseConfig,
     );
-    expect(res.content[0].text).toBe("TRIVIAL");
+    expect(res.content[0].text).toBe("NONE");
   });
 
   it("names the effective maxTokens in the truncation warning", async () => {
@@ -562,6 +624,14 @@ describe("buildToolDefinitions", () => {
     const [implement, direct] = buildToolDefinitions(baseConfig);
     expect(implement.name).toBe("local_implement");
     expect(direct.name).toBe("local_direct");
+  });
+
+  it("does not promise local_direct unconditional raw output", () => {
+    // shouldWrapOutput ranks profile.wrap above the tool name, so local_direct
+    // with task "implement" or "fix" still wraps unless overridden.
+    const [, direct] = buildToolDefinitions(baseConfig);
+    expect(direct.description).toContain("by default without review wrapping");
+    expect(direct.description).not.toContain("return the raw response without review wrapping");
   });
 });
 

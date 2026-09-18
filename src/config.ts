@@ -51,8 +51,30 @@ const ConfigSchema = z.object({
   tier: z.string().min(1).nullable().default(null),
   // null = this instance accepts every task. A list makes the published `task`
   // enum smaller, so a disallowed task is unreachable rather than merely rejected.
-  tasks: z.array(z.enum(TASKS)).nonempty().nullable().default(null),
+  // Duplicates are rejected rather than silently de-duplicated, matching
+  // taskListEnv's stance on an unknown name below: a list that doesn't say what
+  // it means is a config bug, not something to paper over. A duplicate here would
+  // otherwise reach the published JSON Schema `enum` with a repeated member.
+  tasks: z
+    .array(z.enum(TASKS))
+    .nonempty()
+    .refine(
+      (arr) => findDuplicates(arr).length === 0,
+      (arr) => ({ message: `tasks contains duplicate value(s): ${findDuplicates(arr).join(", ")}` }),
+    )
+    .nullable()
+    .default(null),
 });
+
+function findDuplicates(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const dupes = new Set<string>();
+  for (const v of values) {
+    if (seen.has(v)) dupes.add(v);
+    seen.add(v);
+  }
+  return [...dupes];
+}
 
 export type Config = z.infer<typeof ConfigSchema>;
 

@@ -653,6 +653,17 @@ describe("tier and tasks", () => {
     expect(() => loadConfig()).toThrow(/tasks/);
   });
 
+  it("rejects duplicate task names in config.json, naming the duplicate", () => {
+    writeBase({ tasks: ["summarize", "summarize"] });
+    expect(() => loadConfig()).toThrow(/tasks contains duplicate value\(s\): summarize/);
+  });
+
+  it("rejects duplicate task names in the env list, naming the duplicate", () => {
+    writeBase();
+    process.env.LOCAL_LLM_TASKS = "summarize,extract,summarize";
+    expect(() => loadConfig()).toThrow(/tasks contains duplicate value\(s\): summarize/);
+  });
+
   it("rejects an env task list that is only separators", () => {
     writeBase();
     process.env.LOCAL_LLM_TASKS = " , , ";
