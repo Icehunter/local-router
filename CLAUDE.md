@@ -32,6 +32,13 @@ works as a literal digit in the final instruction — an instruction that refers
 stated earlier in the prompt is indirection the model does not resolve. `summarize`
 defaults to 10; the other two have no default.
 
+The cap is binding on `summarize` and advisory on `extract` and `review`. Measured:
+`extract` with `max_lines: 5` on an input containing seven distinct task names returned
+all seven. A summary can be compressed to fit a cap by merging; an extraction cannot fit
+without dropping items. The model keeps the data and overruns, which is the right
+trade — an overrun is visible, a dropped symbol is not. Do not read a clean line count
+off `extract` or `review` as proof the cap held.
+
 ### What the CPU helper may and may not be used for
 
 Measured on this exact model (`qwen-cpu-helper`, Qwen3-4B-Instruct-2507 Q4_K_M, n_ctx

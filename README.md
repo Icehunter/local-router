@@ -43,6 +43,14 @@ the argument. The cap reaches the model as a literal count in the last sentence 
 prompt: a small model will not reliably resolve an instruction that refers to a number
 stated elsewhere, so the digit has to be in the instruction itself.
 
+The cap is binding on `summarize` and advisory on `extract` and `review`. A summary can
+always be made shorter by merging lines, so the model obeys. An extraction or a defect
+list cannot: if there are seven symbols and the cap is five, the only way to fit is to
+drop two. The model keeps the data and exceeds the cap, which is the failure you want —
+an overrun is visible in the output, a silently dropped symbol is not. Treat `max_lines`
+on those two as a budget hint, and size the request rather than the cap if you need a
+guarantee.
+
 Precedence for every setting is **explicit argument > task profile > config default**.
 An output cap only ever lowers `maxTokens`; it never raises it.
 
