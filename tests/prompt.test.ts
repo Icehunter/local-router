@@ -4,6 +4,8 @@ import {
   DEFAULT_SYSTEM_PROMPT,
   REVIEW_REMINDER,
   wrapWithReviewReminder,
+  TASKS,
+  TASK_PROFILES,
 } from "../src/prompt.js";
 
 describe("buildMessages", () => {
@@ -123,5 +125,107 @@ describe("wrapWithReviewReminder", () => {
     expect(REVIEW_REMINDER).toContain("ALL THREE");
     expect(REVIEW_REMINDER).toContain("fewer than 5 lines");
     expect(REVIEW_REMINDER).toContain("regenerate via local_implement");
+  });
+});
+
+describe("task profiles", () => {
+  it("defines a profile for every task", () => {
+    for (const task of TASKS) {
+      expect(TASK_PROFILES[task]).toBeDefined();
+      expect(TASK_PROFILES[task].system.length).toBeGreaterThan(0);
+      expect(TASK_PROFILES[task].directive.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("wraps only implement and fix", () => {
+    const wrapping = TASKS.filter((t) => TASK_PROFILES[t].wrap);
+    expect(wrapping).toEqual(["implement", "fix"]);
+  });
+
+  it("caps output on the short-output tasks only", () => {
+    expect(TASK_PROFILES.review.maxTokens).toBe(1500);
+    expect(TASK_PROFILES.summarize.maxTokens).toBe(1000);
+    expect(TASK_PROFILES.extract.maxTokens).toBe(1000);
+    expect(TASK_PROFILES.classify.maxTokens).toBe(50);
+    expect(TASK_PROFILES.implement.maxTokens).toBeUndefined();
+    expect(TASK_PROFILES.fix.maxTokens).toBeUndefined();
+    expect(TASK_PROFILES.explain.maxTokens).toBeUndefined();
+  });
+
+  it("sets deterministic temperatures on the extraction-like tasks", () => {
+    expect(TASK_PROFILES.implement.temperature).toBe(0.2);
+    expect(TASK_PROFILES.fix.temperature).toBe(0.1);
+    expect(TASK_PROFILES.review.temperature).toBe(0.2);
+    expect(TASK_PROFILES.summarize.temperature).toBe(0);
+    expect(TASK_PROFILES.extract.temperature).toBe(0);
+    expect(TASK_PROFILES.explain.temperature).toBe(0.6);
+    expect(TASK_PROFILES.classify.temperature).toBe(0);
+  });
+
+  it("implement reuses the default persona and code directive verbatim", () => {
+    expect(TASK_PROFILES.implement.system).toBe(DEFAULT_SYSTEM_PROMPT);
+    const withTask = buildMessages({ prompt: "p", task: "implement" });
+    const without = buildMessages({ prompt: "p" });
+    expect(withTask).toEqual(without);
+  });
+});
+
+describe("buildMessages with a task", () => {
+  it("uses the profile system prompt", () => {
+    const m = buildMessages({ prompt: "x", task: "summarize" });
+    expect(m[0].content).toBe(TASK_PROFILES.summarize.system);
+  });
+
+  it("uses the profile directive", () => {
+    const m = buildMessages({ prompt: "x", task: "extract" });
+    expect(m[m.length - 1].content).toContain(TASK_PROFILES.extract.directive);
+  });
+
+  it("explicit system beats the profile system prompt", () => {
+    const m = buildMessages({ prompt: "x", task: "review", system: "be terse" });
+    expect(m[0].content).toBe("be terse");
+  });
+
+  it("explicit output_format beats the profile directive", () => {
+    const m = buildMessages({ prompt: "x", task: "review", output_format: "diff" });
+    const user = m[m.length - 1].content;
+    expect(user).toContain("Return a unified diff");
+    expect(user).not.toContain(TASK_PROFILES.review.directive);
+  });
+
+  it("with no task, output is byte-identical to the legacy two-message form", () => {
+    const m = buildMessages({ prompt: "write hello" });
+    expect(m).toHaveLength(2);
+    expect(m[0]).toEqual({ role: "system", content: DEFAULT_SYSTEM_PROMPT });
+    expect(m[1].content).toBe(
+      "write hello\n\n---\n\nReturn only code. No prose, no fences unless syntactically required by the language.",
+    );
+  });
+
+  it("renders examples as alternating user/assistant pairs between system and final user", () => {
+    const m = buildMessages({
+      prompt: "final input",
+      task: "classify",
+      examples: [
+        { input: "a", output: "TRIVIAL" },
+        { input: "b", output: "NONTRIVIAL" },
+      ],
+    });
+    expect(m.map((x) => x.role)).toEqual(["system", "user", "assistant", "user", "assistant", "user"]);
+    expect(m[1].content).toBe("a");
+    expect(m[2].content).toBe("TRIVIAL");
+    expect(m[3].content).toBe("b");
+    expect(m[4].content).toBe("NONTRIVIAL");
+    expect(m[5].content).toContain("final input");
+  });
+
+  it("does not add example turns when examples is absent", () => {
+    const m = buildMessages({ prompt: "x", task: "classify" });
+    expect(m).toHaveLength(2);
+  });
+
+  it("review directive demands the NONE sentinel", () => {
+    expect(TASK_PROFILES.review.directive).toContain("NONE");
+    expect(TASK_PROFILES.extract.directive).toContain("NONE");
   });
 });
