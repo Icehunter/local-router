@@ -1,6 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    // TypeScript 7 no longer includes every node_modules/@types package as an
+    // ambient global; each one has to be named here.
+    "types": ["node"],
     "module": "Node16",
     "moduleResolution": "Node16",
     "outDir": "./dist",

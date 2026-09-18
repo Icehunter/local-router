@@ -140,7 +140,11 @@ The counter resets after a successful local model call.
 
 ## Repo conventions
 
-- ESM only, TypeScript strict mode
+- ESM only, TypeScript strict mode (TypeScript 7)
+- TypeScript 7 does not auto-include `node_modules/@types/*` as ambient globals the
+  way 5 did. Every such package has to be named in `types` in `tsconfig.json`, which
+  currently lists `node` alone. Adding a new @types dependency means adding it there
+  too, or its globals resolve to nothing with a misleading "Cannot find name" error.
 - ESM imports use `.js` extensions
 - Tests in `tests/`, source in `src/`. Vitest.
 - Camel-case in `Config`, snake-case on the wire (translation in `local-client.ts`)
