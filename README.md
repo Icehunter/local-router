@@ -17,6 +17,28 @@ The plugin exposes two MCP tools:
 - `local_implement` — delegate mode. Wraps output in `<local_output>` and appends a provider-neutral review reminder.
 - `local_direct` — direct mode. Returns raw local-model output for local CLI flows or human-facing answers.
 
+### Tasks
+
+Both tools accept an optional `task` argument that selects a prompt and sampling profile.
+Omitting it reproduces the plugin's original code-generation behaviour.
+
+| task | what it is for | wrapped for review | temperature | output cap |
+|---|---|---|---|---|
+| `implement` | writing new code | yes | 0.2 | — |
+| `fix` | smallest change that makes failing code correct | yes | 0.1 | — |
+| `review` | mechanical defects only, one per line, `NONE` if clean | no | 0.2 | 1500 |
+| `summarize` | compressing logs, lists and long output | no | 0.0 | 1000 |
+| `extract` | pulling out symbols or items verbatim | no | 0.0 | 1000 |
+| `explain` | prose explanation of unfamiliar code | no | 0.6 | — |
+| `classify` | one label per input; requires `examples` | no | 0.0 | 50 |
+
+`classify` requires an `examples` array of at least two `{ input, output }` pairs, sent
+as alternating user/assistant turns. Without examples a small model returns the same
+label for every input, so the argument is required rather than recommended.
+
+Precedence for every setting is **explicit argument > task profile > config default**.
+An output cap only ever lowers `maxTokens`; it never raises it.
+
 ## Prerequisites
 
 - Claude Code (any subscription that can use plugins)
@@ -80,6 +102,8 @@ Edit `config.json`:
 | `repeatPenalty` | no | `1.1` | Penalty applied to recently-emitted tokens to suppress repetition loops. 1.0 = no penalty, 1.1 = standard, > 1.3 = often too suppressive. Sent as `repeat_penalty`, which llama.cpp and Ollama honour; vLLM and LM Studio ignore the field rather than erroring. |
 | `enableThinking` | no | `null` | Sends `chat_template_kwargs: {enable_thinking: …}`. `null` omits the field entirely, leaving the backend's default. Set `false` for a reasoning model (Qwen3 and similar): with thinking on, the model spends `maxTokens` on `reasoning_content` and can return an **empty** `content`, which this plugin then correctly rejects as a failed generation. Measured on qwen3.8-27b: thinking on at `maxTokens: 2500` returned 2500 reasoning tokens and zero content; thinking off returned a complete answer in 1268 tokens. |
 | `debugLogPath` | no | `null` | When set to a file path, the plugin appends a JSONL entry per call (request + response, bodies truncated at 8KB) to that file. The file is created `0600` because entries contain full prompt bodies. Default `null` disables logging. |
+| `tier` | no | `null` | Free-form label for this instance, e.g. `coder` or `helper`. Appears in the tool description. Does no gating. |
+| `tasks` | no | `null` | Tasks this instance accepts. `null` means all of them. The published `task` enum lists only these, so a disallowed task is unreachable. Also settable as `LOCAL_LLM_TASKS=summarize,extract`. |
 
 ### Environment variable overrides
 
@@ -102,6 +126,8 @@ Configuration resolves in this order, first match wins:
 - `LOCAL_LLM_REPEAT_PENALTY`
 - `LOCAL_LLM_DEBUG_LOG_PATH`
 - `LOCAL_LLM_ENABLE_THINKING` (`true` / `false` / `1` / `0`)
+- `LOCAL_LLM_TIER`
+- `LOCAL_LLM_TASKS` (comma-separated, e.g. `summarize,extract`)
 
 A variable that is set but blank counts as *not provided*, so resolution falls through
 to `config.json` and then to the default. This is what makes the bundled `.mcp.json`

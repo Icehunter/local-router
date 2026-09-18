@@ -11,5 +11,7 @@
   "minP": 0.05,
   "repeatPenalty": 1.1,
   "debugLogPath": null,
-  "enableThinking": null
+  "enableThinking": null,
+  "tier": "coder",
+  "tasks": ["implement", "fix", "review", "explain"]
 }

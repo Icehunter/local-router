@@ -17,6 +17,15 @@ Three tiers are available:
 | 27B GPU coder | `mcp__local-coder__local_implement` | ~1–30s | Writing, refactoring and explaining code |
 | 4B CPU helper | `mcp__local-helper__local_direct` | ~0.6–20s, scales with input | Any non-code-writing text job: summaries, symbol extraction, compression, classification with few-shot |
 
+### Tasks
+
+Both tools take an optional `task`. Coder tier serves `implement`, `fix`, `review`,
+`explain`; helper tier serves `summarize`, `extract`, `explain`, `classify`. Each
+instance declares its own list in `tasks`, and the published `task` enum reflects it.
+
+`classify` requires at least two `examples` — this is the measured few-shot requirement
+from the table above, now enforced by the schema rather than by prose.
+
 ### What the CPU helper may and may not be used for
 
 Measured on this exact model (`qwen-cpu-helper`, Qwen3-4B-Instruct-2507 Q4_K_M, n_ctx
@@ -108,6 +117,10 @@ The counter resets after a successful local model call.
 
 ## Out of scope
 
-- Adding a `local_review` tool (intentionally deferred — review belongs to the caller's configured review path)
+- A standalone `local_review` tool. Superseded by `task: "review"`, which is deliberately
+  narrowed to mechanical defects (missing imports, syntax, undefined symbols, boundary
+  errors) and never returns a verdict on whether to apply a change. Its output is never
+  wrapped in `<local_output>`, so it cannot be mistaken for code. It feeds into the
+  caller's configured review path rather than replacing it.
 - `enable_thinking` flag (deferred until A/B testing shows it helps)
 - Streaming, retries, response caching, multi-turn session state — see spec for rationale
