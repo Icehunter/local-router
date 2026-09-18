@@ -67,7 +67,7 @@ An output cap only ever lowers `maxTokens`; it never raises it.
 ## Prerequisites
 
 - Claude Code (any subscription that can use plugins)
-- Node.js 20+ on the machine running Claude Code
+- Node.js 22+ on the machine running Claude Code (20 reached end of life on 2026-04-30)
 - An OpenAI-compatible chat-completions server reachable from your laptop. Tested against:
   - **llama.cpp** (`llama-server`)
   - **LM Studio**
