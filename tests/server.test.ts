@@ -384,6 +384,59 @@ describe("handleToolCall — task validation and gating", () => {
   });
 });
 
+describe("handleToolCall — tool gating", () => {
+  const helper: Config = {
+    ...baseConfig, tier: "helper", tasks: ["summarize", "extract", "explain", "classify"],
+  };
+
+  it("rejects local_implement on an instance that publishes only local_direct", async () => {
+    const err = (await handleToolCall(
+      "local_implement", { prompt: "x", task: "summarize" }, helper,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toBe(
+      "Tool local_implement is not served by this instance (tier: helper). " +
+        "No accepted task wraps its output, so local_implement and local_direct would " +
+        "behave identically. Call local_direct instead.",
+    );
+  });
+
+  it("omits the tier clause when no tier is declared", async () => {
+    const cfg: Config = { ...baseConfig, tasks: ["summarize"] };
+    const err = (await handleToolCall(
+      "local_implement", { prompt: "x", task: "summarize" }, cfg,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/not served by this instance\. No accepted task wraps/);
+  });
+
+  it("rejects local_implement before validating its arguments", async () => {
+    // The call target is wrong regardless of what the arguments say; reporting a
+    // bad argument first would send the caller to fix the wrong thing.
+    const err = (await handleToolCall(
+      "local_implement", { prompt: "" }, helper,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/not served by this instance/);
+  });
+
+  it("still serves local_implement when config.tasks is null", async () => {
+    mockUpstream("ok");
+    const res = await handleToolCall("local_implement", { prompt: "x" }, baseConfig);
+    expect(res.content[0].text).toContain("ok");
+  });
+
+  it("still serves local_implement when an accepted task wraps", async () => {
+    mockUpstream("ok");
+    const cfg: Config = { ...baseConfig, tier: "coder", tasks: ["implement", "explain"] };
+    const res = await handleToolCall("local_implement", { prompt: "x", task: "implement" }, cfg);
+    expect(res.content[0].text).toContain("ok");
+  });
+
+  it("always serves local_direct", async () => {
+    mockUpstream("ok");
+    const res = await handleToolCall("local_direct", { prompt: "x", task: "summarize" }, helper);
+    expect(res.content[0].text).toBe("ok");
+  });
+});
+
 describe("handleToolCall — classify examples", () => {
   const twoExamples = [
     { input: "rename a variable", output: "TRIVIAL" },
@@ -685,25 +738,34 @@ describe("buildToolDefinitions", () => {
     expect(taskEnum(implement)).toEqual(["summarize", "extract"]);
   });
 
-  it("omits the examples property when classify is not allowed", () => {
+  it("omits the examples property from every published tool when classify is not allowed", () => {
     const cfg: Config = { ...baseConfig, tasks: ["summarize"] };
-    const [implement, direct] = buildToolDefinitions(cfg);
-    expect(prop(implement, "examples")).toBeUndefined();
-    expect(prop(direct, "examples")).toBeUndefined();
+    const tools = buildToolDefinitions(cfg);
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) expect(prop(tool, "examples")).toBeUndefined();
   });
 
-  it("includes the examples property when classify is allowed", () => {
+  it("includes the examples property on every published tool when classify is allowed", () => {
     const cfg: Config = { ...baseConfig, tasks: ["classify"] };
-    const [implement, direct] = buildToolDefinitions(cfg);
-    expect(prop(implement, "examples").minItems).toBe(2);
-    expect(prop(direct, "examples").minItems).toBe(2);
+    const tools = buildToolDefinitions(cfg);
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) expect(prop(tool, "examples").minItems).toBe(2);
   });
 
-  it("appends the tier line to both descriptions", () => {
+  it("appends the tier line to every published tool description", () => {
     const cfg: Config = { ...baseConfig, tier: "helper", tasks: ["summarize", "extract"] };
+    const tools = buildToolDefinitions(cfg);
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect(tool.description).toContain("Tier: helper. Accepts: summarize, extract.");
+    }
+  });
+
+  it("appends the tier line to both descriptions when both tools are published", () => {
+    const cfg: Config = { ...baseConfig, tier: "coder", tasks: ["implement", "review"] };
     const [implement, direct] = buildToolDefinitions(cfg);
-    expect(implement.description).toContain("Tier: helper. Accepts: summarize, extract.");
-    expect(direct.description).toContain("Tier: helper. Accepts: summarize, extract.");
+    expect(implement.description).toContain("Tier: coder. Accepts: implement, review.");
+    expect(direct.description).toContain("Tier: coder. Accepts: implement, review.");
   });
 
   it("appends no tier line when neither tier nor tasks is declared", () => {
@@ -740,11 +802,40 @@ describe("buildToolDefinitions", () => {
     expect(prop(implement, "max_lines")).toBeDefined();
   });
 
-  it("omits max_lines when the allowlist has no accepting task", () => {
+  it("omits max_lines from every published tool when the allowlist has no accepting task", () => {
     const cfg: Config = { ...baseConfig, tasks: ["classify"] };
-    const [implement, direct] = buildToolDefinitions(cfg);
-    expect(prop(implement, "max_lines")).toBeUndefined();
-    expect(prop(direct, "max_lines")).toBeUndefined();
+    const tools = buildToolDefinitions(cfg);
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) expect(prop(tool, "max_lines")).toBeUndefined();
+  });
+
+  it("publishes both tools when config.tasks is null", () => {
+    expect(buildToolDefinitions(baseConfig).map((t) => t.name)).toEqual([
+      "local_implement", "local_direct",
+    ]);
+  });
+
+  it("publishes both tools when an accepted task wraps", () => {
+    const cfg: Config = { ...baseConfig, tier: "coder", tasks: ["implement", "review"] };
+    expect(buildToolDefinitions(cfg).map((t) => t.name)).toEqual([
+      "local_implement", "local_direct",
+    ]);
+  });
+
+  it("publishes only local_direct when no accepted task wraps", () => {
+    // local_implement's only remaining job is its wrapping default. With every
+    // accepted task non-wrapping, the two tools are identical for every call
+    // that names a task, and the name selects nothing but the no-task
+    // code-generation default — the wrong default on a tier serving no code task.
+    const cfg: Config = {
+      ...baseConfig, tier: "helper", tasks: ["summarize", "extract", "explain", "classify"],
+    };
+    expect(buildToolDefinitions(cfg).map((t) => t.name)).toEqual(["local_direct"]);
+  });
+
+  it("publishes only local_direct when fix is the sole wrapping task excluded", () => {
+    const cfg: Config = { ...baseConfig, tasks: ["review", "explain"] };
+    expect(buildToolDefinitions(cfg).map((t) => t.name)).toEqual(["local_direct"]);
   });
 
   it("does not promise local_direct unconditional raw output", () => {
@@ -784,15 +875,23 @@ describe("createServer — ListTools wiring", () => {
     expect(implement.description).not.toContain("Tier:");
   });
 
+  it("lists only local_direct over the wire for a non-wrapping instance", async () => {
+    const cfg: Config = {
+      ...baseConfig, tier: "helper", tasks: ["summarize", "extract", "explain", "classify"],
+    };
+    const tools = await listToolsOver(cfg);
+    expect(tools.map((t) => t.name)).toEqual(["local_direct"]);
+  });
+
   it("publishes only the allowlisted tasks and the tier line for a narrow config", async () => {
-    const cfg: Config = { ...baseConfig, tier: "helper", tasks: ["summarize", "extract"] };
+    const cfg: Config = { ...baseConfig, tier: "coder", tasks: ["implement", "review"] };
     const tools = await listToolsOver(cfg);
     const implement = tools.find((t) => t.name === "local_implement")!;
     const direct = tools.find((t) => t.name === "local_direct")!;
     expect((implement.inputSchema.properties as Record<string, any>).task.enum).toEqual([
-      "summarize", "extract",
+      "implement", "review",
     ]);
-    expect(implement.description).toContain("Tier: helper. Accepts: summarize, extract.");
-    expect(direct.description).toContain("Tier: helper. Accepts: summarize, extract.");
+    expect(implement.description).toContain("Tier: coder. Accepts: implement, review.");
+    expect(direct.description).toContain("Tier: coder. Accepts: implement, review.");
   });
 });

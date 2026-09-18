@@ -91,12 +91,28 @@ const DIRECT_TOOL_DEFINITION = {
 };
 
 /**
+ * The two tools differ in exactly one thing: which way `shouldWrapOutput` falls
+ * when the caller names no task. Once a task is named the profile's `wrap` wins,
+ * so on an instance where no accepted task wraps, the tools are identical for
+ * every call that names one — and the only behaviour `local_implement` still
+ * selects is the no-task default, which is the code-generation persona. That is
+ * the wrong default on a tier serving no code task, so the tool is not published
+ * at all rather than published as a trap.
+ */
+export function servesImplementTool(config: Config): boolean {
+  return (config.tasks ?? TASKS).some((t) => TASK_PROFILES[t].wrap);
+}
+
+/**
  * Built per-config rather than as a constant so the published `task` enum lists
  * only what this instance serves: a disallowed task becomes unreachable instead
  * of being rejected after the caller has already committed to the call.
  */
 export function buildToolDefinitions(config: Config) {
   const allowed: readonly Task[] = config.tasks ?? TASKS;
+  const definitions = servesImplementTool(config)
+    ? [IMPLEMENT_TOOL_DEFINITION, DIRECT_TOOL_DEFINITION]
+    : [DIRECT_TOOL_DEFINITION];
   const properties: Record<string, unknown> = {
     ...BASE_TOOL_PROPERTIES,
     task: {
@@ -120,7 +136,7 @@ export function buildToolDefinitions(config: Config) {
       ? ` Tier: ${config.tier ?? "unspecified"}. Accepts: ${allowed.join(", ")}.`
       : "";
 
-  return [IMPLEMENT_TOOL_DEFINITION, DIRECT_TOOL_DEFINITION].map((tool) => {
+  return definitions.map((tool) => {
     const withRole = withRoleDescription(tool, config.toolDescription);
     return { ...withRole, description: withRole.description + tierLine, inputSchema };
   });
@@ -190,6 +206,16 @@ export async function handleToolCall(
 ): Promise<{ content: Array<{ type: "text"; text: string }> }> {
   if (toolName !== TOOL_IMPLEMENT && toolName !== TOOL_DIRECT) {
     throw new Error(`Unknown tool: ${toolName}`);
+  }
+  // Checked before the arguments: the call target is wrong whatever they say,
+  // and a complaint about an argument sends the caller to fix the wrong thing.
+  if (toolName === TOOL_IMPLEMENT && !servesImplementTool(config)) {
+    throw new Error(
+      `Tool ${TOOL_IMPLEMENT} is not served by this instance` +
+        (config.tier !== null ? ` (tier: ${config.tier})` : "") +
+        `. No accepted task wraps its output, so ${TOOL_IMPLEMENT} and ${TOOL_DIRECT} ` +
+        `would behave identically. Call ${TOOL_DIRECT} instead.`,
+    );
   }
   const args = (rawArgs ?? {}) as ToolArgs;
 
