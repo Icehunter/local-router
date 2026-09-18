@@ -17,38 +17,49 @@ import { estimateTokens } from "./tokens.js";
 const TOOL_IMPLEMENT = "local_implement";
 const TOOL_DIRECT = "local_direct";
 
-const TOOL_INPUT_SCHEMA = {
-  type: "object",
-  properties: {
-    prompt: {
-      type: "string",
-      description:
-        "Complete user-message text to send. Include any file contents, instructions, and running context here.",
-    },
-    system: {
-      type: "string",
-      description:
-        "Optional system message override. Default is a baked-in coder persona.",
-    },
-    output_format: {
-      type: "string",
-      enum: ["code", "diff", "explanation"],
-      description:
-        "Format directive appended to the prompt. Default 'code'.",
-    },
-    mode: {
-      type: "string",
-      enum: ["delegate", "direct"],
-      description:
-        "delegate wraps output for Claude review; direct returns raw local-model output.",
-    },
-    include_review_reminder: {
-      type: "boolean",
-      description:
-        "Override whether to wrap output in <local_output> and append the review reminder.",
-    },
+const BASE_TOOL_PROPERTIES = {
+  prompt: {
+    type: "string",
+    description:
+      "Complete user-message text to send. Include any file contents, instructions, and running context here.",
   },
-  required: ["prompt"],
+  system: {
+    type: "string",
+    description:
+      "Optional system message override. Outranks the task profile's system prompt.",
+  },
+  output_format: {
+    type: "string",
+    enum: ["code", "diff", "explanation"],
+    description:
+      "Format directive appended to the prompt. Outranks the task profile's directive. Default 'code'.",
+  },
+  mode: {
+    type: "string",
+    enum: ["delegate", "direct"],
+    description:
+      "delegate wraps output for Claude review; direct returns raw local-model output.",
+  },
+  include_review_reminder: {
+    type: "boolean",
+    description:
+      "Override whether to wrap output in <local_output> and append the review reminder.",
+  },
+};
+
+const EXAMPLES_PROPERTY = {
+  type: "array",
+  minItems: 2,
+  items: {
+    type: "object",
+    properties: {
+      input: { type: "string" },
+      output: { type: "string" },
+    },
+    required: ["input", "output"],
+  },
+  description:
+    'Few-shot label examples, sent as alternating user/assistant turns. Required when task is "classify", rejected with any other task.',
 };
 
 const IMPLEMENT_TOOL_DEFINITION = {
@@ -58,7 +69,6 @@ const IMPLEMENT_TOOL_DEFINITION = {
     "Use for code generation. Caller is responsible for assembling file contents and instruction into the prompt string. " +
     "By default this wraps the output in <local_output> and appends a provider-neutral review reminder. " +
     "The MCP server has no filesystem access.",
-  inputSchema: TOOL_INPUT_SCHEMA,
 };
 
 const DIRECT_TOOL_DEFINITION = {
@@ -66,8 +76,40 @@ const DIRECT_TOOL_DEFINITION = {
   description:
     "Send a prompt to the configured local model and return the raw response without review wrapping. " +
     "Use for direct local mode, explanations, and rate-limit escape-hatch queries.",
-  inputSchema: TOOL_INPUT_SCHEMA,
 };
+
+/**
+ * Built per-config rather than as a constant so the published `task` enum lists
+ * only what this instance serves: a disallowed task becomes unreachable instead
+ * of being rejected after the caller has already committed to the call.
+ */
+export function buildToolDefinitions(config: Config) {
+  const allowed: readonly Task[] = config.tasks ?? TASKS;
+  const properties: Record<string, unknown> = {
+    ...BASE_TOOL_PROPERTIES,
+    task: {
+      type: "string",
+      enum: [...allowed],
+      description:
+        "Task profile. Sets the system prompt, output directive, review wrapping and sampling. " +
+        "Omit for the legacy code-generation default.",
+    },
+  };
+  if (allowed.includes("classify")) {
+    properties.examples = EXAMPLES_PROPERTY;
+  }
+  const inputSchema = { type: "object", properties, required: ["prompt"] };
+
+  const tierLine =
+    config.tier !== null || config.tasks !== null
+      ? ` Tier: ${config.tier ?? "unspecified"}. Accepts: ${allowed.join(", ")}.`
+      : "";
+
+  return [IMPLEMENT_TOOL_DEFINITION, DIRECT_TOOL_DEFINITION].map((tool) => {
+    const withRole = withRoleDescription(tool, config.toolDescription);
+    return { ...withRole, description: withRole.description + tierLine, inputSchema };
+  });
+}
 
 type ToolArgs = {
   prompt?: unknown;
@@ -274,10 +316,7 @@ async function main(): Promise<void> {
   server.onerror = logProtocolError;
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      withRoleDescription(IMPLEMENT_TOOL_DEFINITION, config.toolDescription),
-      withRoleDescription(DIRECT_TOOL_DEFINITION, config.toolDescription),
-    ],
+    tools: buildToolDefinitions(config),
   }));
 
   server.setRequestHandler(CallToolRequestSchema, async (req, extra) =>

@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { handleToolCall, logProtocolError, shouldWrapOutput, withRoleDescription } from "../src/server.js";
+import {
+  buildToolDefinitions,
+  handleToolCall,
+  logProtocolError,
+  shouldWrapOutput,
+  withRoleDescription,
+} from "../src/server.js";
 import type { Config } from "../src/config.js";
 import { readFileSync } from "node:fs";
 
@@ -494,5 +500,74 @@ describe("handleToolCall — task wrapping defaults", () => {
       baseConfig,
     );
     expect(res.content[0].text).toBe("code");
+  });
+});
+
+describe("buildToolDefinitions", () => {
+  // `properties` is typed Record<string, unknown>, so strict mode rejects a bare
+  // `.minItems` on a member. Both helpers cast once, here, rather than at each use.
+  function prop(tool: { inputSchema: Record<string, any> }, name: string): any {
+    return tool.inputSchema.properties[name];
+  }
+  function taskEnum(tool: { inputSchema: Record<string, any> }): string[] {
+    return prop(tool, "task").enum;
+  }
+
+  it("publishes every task when config.tasks is null", () => {
+    const [implement, direct] = buildToolDefinitions(baseConfig);
+    expect(taskEnum(implement)).toEqual([
+      "implement", "fix", "review", "summarize", "extract", "explain", "classify",
+    ]);
+    expect(taskEnum(direct)).toEqual(taskEnum(implement));
+  });
+
+  it("publishes only the allowed tasks", () => {
+    const cfg: Config = { ...baseConfig, tier: "helper", tasks: ["summarize", "extract"] };
+    const [implement] = buildToolDefinitions(cfg);
+    expect(taskEnum(implement)).toEqual(["summarize", "extract"]);
+  });
+
+  it("omits the examples property when classify is not allowed", () => {
+    const cfg: Config = { ...baseConfig, tasks: ["summarize"] };
+    const [implement] = buildToolDefinitions(cfg);
+    expect(prop(implement, "examples")).toBeUndefined();
+  });
+
+  it("includes the examples property when classify is allowed", () => {
+    const cfg: Config = { ...baseConfig, tasks: ["classify"] };
+    const [implement] = buildToolDefinitions(cfg);
+    expect(prop(implement, "examples").minItems).toBe(2);
+  });
+
+  it("appends the tier line to both descriptions", () => {
+    const cfg: Config = { ...baseConfig, tier: "helper", tasks: ["summarize", "extract"] };
+    const [implement, direct] = buildToolDefinitions(cfg);
+    expect(implement.description).toContain("Tier: helper. Accepts: summarize, extract.");
+    expect(direct.description).toContain("Tier: helper. Accepts: summarize, extract.");
+  });
+
+  it("appends no tier line when neither tier nor tasks is declared", () => {
+    const [implement] = buildToolDefinitions(baseConfig);
+    expect(implement.description).not.toContain("Tier:");
+    expect(implement.description).not.toContain("Accepts:");
+  });
+
+  it("still carries the toolDescription suffix ahead of the tier line", () => {
+    const cfg: Config = { ...baseConfig, toolDescription: "the 4B box", tier: "helper" };
+    const [implement] = buildToolDefinitions(cfg);
+    expect(implement.description).toMatch(/THIS INSTANCE: the 4B box.*Tier: helper\./s);
+  });
+
+  it("keeps the two tool names stable", () => {
+    const [implement, direct] = buildToolDefinitions(baseConfig);
+    expect(implement.name).toBe("local_implement");
+    expect(direct.name).toBe("local_direct");
+  });
+});
+
+describe("ListTools wiring", () => {
+  it("serves the config-derived definitions, not the static constants", async () => {
+    const src = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
+    expect(src).toMatch(/tools:\s*buildToolDefinitions\(config\)/);
   });
 });
