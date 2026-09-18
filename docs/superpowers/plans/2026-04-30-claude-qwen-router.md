@@ -2,11 +2,16 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> **Node floor updated 2026-09-17.** This plan was written against Node 20, which
+> reached end of life on 2026-04-30. The three references below now read 22, the
+> oldest release still supported, matching `engines` in `package.json`. Nothing else
+> in this document has been restated after the fact.
+
 **Goal:** Ship a distributable Claude Code plugin that exposes a local OpenAI-compatible LLM (Qwen on llama.cpp / LM Studio / Ollama / vLLM) as an MCP tool named `qwen_implement`, so Claude Code (running on Max) can delegate code-generation work to a free local model while planning and review stay on Claude.
 
 **Architecture:** Claude Code plugin (`.claude-plugin/plugin.json` + `.mcp.json`) ships a Node-based stdio MCP server. The server has zero filesystem access; it just relays prompt strings to the upstream `/v1/chat/completions` endpoint and returns the response. Config lives in `${CLAUDE_PLUGIN_ROOT}/config.json` with env-var overrides.
 
-**Tech Stack:** TypeScript (ESM, Node 20+), `@modelcontextprotocol/sdk` for MCP server, `zod` for config validation, native `fetch` for HTTP, `vitest` for tests. No build step at runtime — TS is compiled to `dist/` and shipped, so the plugin runs `node dist/server.js`.
+**Tech Stack:** TypeScript (ESM, Node 22+), `@modelcontextprotocol/sdk` for MCP server, `zod` for config validation, native `fetch` for HTTP, `vitest` for tests. No build step at runtime — TS is compiled to `dist/` and shipped, so the plugin runs `node dist/server.js`.
 
 ---
 
@@ -93,7 +98,7 @@ Create `package.json`:
   "type": "module",
   "private": false,
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -1025,7 +1030,7 @@ The plugin exposes one MCP tool: `qwen_implement`. Claude Code calls it with a f
 ## Prerequisites
 
 - Claude Code (any subscription that can use plugins)
-- Node.js 20+ on the machine running Claude Code
+- Node.js 22+ on the machine running Claude Code
 - An OpenAI-compatible chat-completions server reachable from your laptop. Tested against:
   - **llama.cpp** (`llama-server`)
   - **LM Studio**
