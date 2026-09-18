@@ -437,6 +437,65 @@ describe("handleToolCall — tool gating", () => {
   });
 });
 
+describe("handleToolCall — task required when gated", () => {
+  const coder: Config = { ...baseConfig, tier: "coder", tasks: ["implement", "review"] };
+
+  it("rejects a missing task, naming the tier and the accepted list", async () => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x" }, coder,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toBe(
+      "`task` is required on this instance (tier: coder). " +
+        "Accepted tasks: implement, review. " +
+        "This instance does not serve the no-task default, which uses a " +
+        "code-generation system prompt.",
+    );
+  });
+
+  it("omits the tier clause when no tier is declared", async () => {
+    const cfg: Config = { ...baseConfig, tasks: ["summarize"] };
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x" }, cfg,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/^`task` is required on this instance\. Accepted tasks: summarize\./);
+  });
+
+  it("rejects local_implement for a missing task too", async () => {
+    const err = (await handleToolCall(
+      "local_implement", { prompt: "x" }, coder,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/`task` is required on this instance/);
+  });
+
+  it("reports an unknown task as unknown rather than as missing", async () => {
+    // A caller who named a task has a different mistake from one who named none;
+    // collapsing both into "required" sends the first to the wrong fix.
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "transpile" }, coder,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/`task` must be one of/);
+  });
+
+  it("reports a disallowed task as disallowed rather than as missing", async () => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "summarize" }, coder,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/is not accepted by this instance/);
+  });
+
+  it("accepts a named task on a gated instance", async () => {
+    mockUpstream("ok");
+    const res = await handleToolCall("local_direct", { prompt: "x", task: "review" }, coder);
+    expect(res.content[0].text).toBe("ok");
+  });
+
+  it("still serves a missing task when config.tasks is null", async () => {
+    mockUpstream("ok");
+    const res = await handleToolCall("local_direct", { prompt: "x" }, baseConfig);
+    expect(res.content[0].text).toBe("ok");
+  });
+});
+
 describe("handleToolCall — classify examples", () => {
   const twoExamples = [
     { input: "rename a variable", output: "TRIVIAL" },
@@ -778,6 +837,22 @@ describe("buildToolDefinitions", () => {
     const cfg: Config = { ...baseConfig, toolDescription: "the 4B box", tier: "helper" };
     const [implement] = buildToolDefinitions(cfg);
     expect(implement.description).toMatch(/THIS INSTANCE: the 4B box.*Tier: helper\./s);
+  });
+
+  it("marks task required in the schema when this instance is gated", () => {
+    const cfg: Config = { ...baseConfig, tier: "coder", tasks: ["implement", "review"] };
+    for (const tool of buildToolDefinitions(cfg)) {
+      expect(tool.inputSchema.required).toEqual(["prompt", "task"]);
+      expect(prop(tool, "task").description).toMatch(/Required on this instance\./);
+      expect(prop(tool, "task").description).not.toMatch(/Omit for/);
+    }
+  });
+
+  it("leaves task optional in the schema when config.tasks is null", () => {
+    for (const tool of buildToolDefinitions(baseConfig)) {
+      expect(tool.inputSchema.required).toEqual(["prompt"]);
+      expect(prop(tool, "task").description).toMatch(/Omit for the legacy code-generation default\./);
+    }
   });
 
   it("keeps the two tool names stable", () => {

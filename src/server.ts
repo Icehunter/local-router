@@ -120,7 +120,9 @@ export function buildToolDefinitions(config: Config) {
       enum: [...allowed],
       description:
         "Task profile. Sets the system prompt, output directive, review wrapping and sampling. " +
-        "Omit for the legacy code-generation default.",
+        (config.tasks !== null
+          ? "Required on this instance."
+          : "Omit for the legacy code-generation default."),
     },
   };
   if (allowed.includes("classify")) {
@@ -129,7 +131,14 @@ export function buildToolDefinitions(config: Config) {
   if (allowed.some((t) => MAX_LINES_TASKS.includes(t))) {
     properties.max_lines = MAX_LINES_PROPERTY;
   }
-  const inputSchema = { type: "object", properties, required: ["prompt"] };
+  // An instance that declares `tasks` has also declared that the no-task default
+  // — the code-generation persona — is not one of the things it serves. Marking
+  // task required makes that unreachable rather than rejected after the fact.
+  const inputSchema = {
+    type: "object",
+    properties,
+    required: config.tasks !== null ? ["prompt", "task"] : ["prompt"],
+  };
 
   const tierLine =
     config.tier !== null || config.tasks !== null
@@ -278,6 +287,19 @@ export async function handleToolCall(
           `Route this task to the instance configured for it.`,
       );
     }
+  }
+
+  // After the validity and allowlist checks: a caller who named the wrong task has
+  // a different mistake from one who named none, and collapsing them sends the
+  // first to the wrong fix.
+  if (task === undefined && config.tasks !== null) {
+    throw new Error(
+      "`task` is required on this instance" +
+        (config.tier !== null ? ` (tier: ${config.tier})` : "") +
+        `. Accepted tasks: ${config.tasks.join(", ")}. ` +
+        `This instance does not serve the no-task default, which uses a ` +
+        `code-generation system prompt.`,
+    );
   }
 
   let examples: FewShotExample[] | undefined;

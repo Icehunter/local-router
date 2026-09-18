@@ -12,15 +12,25 @@ If you have a local box with a coder model loaded, you can have your primary age
 - **This plugin's MCP server**: a local Node subprocess with no filesystem access; relays prompts to your upstream LLM over HTTP
 - **Your local server (llama.cpp / LM Studio / Ollama / vLLM)**: handles code generation
 
-The plugin exposes two MCP tools:
+The plugin exposes up to two MCP tools:
 
 - `local_implement` — delegate mode. Wraps output in `<local_output>` and appends a provider-neutral review reminder.
 - `local_direct` — direct mode. Returns raw local-model output for local CLI flows or human-facing answers.
 
+The two differ in one thing only: which way the wrapping decision falls when the caller
+names no `task`. Once a task is named, that task's profile decides, and the tool name
+changes nothing. So an instance whose `tasks` allowlist contains no wrapping task —
+neither `implement` nor `fix` — publishes **only `local_direct`**. On such an instance
+`local_implement` would differ from `local_direct` in exactly one reachable way: it would
+apply the no-task code-generation default, which is the one behaviour that instance has
+declared it does not serve. Calling it directly is rejected for the same reason.
+
 ### Tasks
 
-Both tools accept an optional `task` argument that selects a prompt and sampling profile.
-Omitting it reproduces the plugin's original code-generation behaviour.
+Both tools accept a `task` argument that selects a prompt and sampling profile. It is
+optional only when `tasks` is unset; an instance that declares an allowlist has also
+declared that the no-task code-generation default is not one of the things it serves, so
+`task` is marked required in its published schema and rejected when missing.
 
 | task | what it is for | wrapped for review | temperature | output cap |
 |---|---|---|---|---|
@@ -118,7 +128,7 @@ Edit `config.json`:
 | `enableThinking` | no | `null` | Sends `chat_template_kwargs: {enable_thinking: …}`. `null` omits the field entirely, leaving the backend's default. Set `false` for a reasoning model (Qwen3 and similar): with thinking on, the model spends `maxTokens` on `reasoning_content` and can return an **empty** `content`, which this plugin then correctly rejects as a failed generation. Measured on qwen3.8-27b: thinking on at `maxTokens: 2500` returned 2500 reasoning tokens and zero content; thinking off returned a complete answer in 1268 tokens. |
 | `debugLogPath` | no | `null` | When set to a file path, the plugin appends a JSONL entry per call (request + response, bodies truncated at 8KB) to that file. The file is created `0600` because entries contain full prompt bodies. Default `null` disables logging. |
 | `tier` | no | `null` | Free-form label for this instance, e.g. `coder` or `helper`. Appears in the tool description. Does no gating. |
-| `tasks` | no | `null` | Tasks this instance accepts. `null` means all of them. The published `task` enum lists only these, so a disallowed task is unreachable. Also settable as `LOCAL_LLM_TASKS=summarize,extract`. |
+| `tasks` | no | `null` | Tasks this instance accepts. `null` means all of them. Setting it does three things: the published `task` enum lists only these, so a disallowed task is unreachable; `task` becomes required, because the no-task code-generation default is not one of the listed tasks; and `local_implement` is published only if `implement` or `fix` is on the list. Also settable as `LOCAL_LLM_TASKS=summarize,extract`. |
 
 ### Environment variable overrides
 

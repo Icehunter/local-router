@@ -19,16 +19,26 @@ Three tiers are available:
 
 ### Tasks
 
-Both tools take an optional `task`. Coder tier serves `implement`, `fix`, `review`,
+Every call names a `task`. Coder tier serves `implement`, `fix`, `review`,
 `explain`; helper tier serves `summarize`, `extract`, `explain`, `classify`. Each
 instance declares its own list in `tasks`, and the published `task` enum reflects it.
 
 Both instances set this via `LOCAL_LLM_TIER` and `LOCAL_LLM_TASKS` in the `env` block of
 `~/.claude.json`. Leaving them unset publishes all seven tasks on both tiers, which is
 not a rejection at call time but an absence of gating: the 4B advertises `implement` and
-the caller finds out by reading the result. Gating also drives the schema — with
-`classify` excluded, the coder's `examples` property is dropped rather than merely
-rejected.
+the caller finds out by reading the result.
+
+Declaring `tasks` drives three things beyond the enum:
+
+- `examples` is dropped from the schema when `classify` is not on the list, rather than
+  accepted and then rejected.
+- `task` becomes **required**. An instance with an allowlist has declared that the
+  no-task default — the code-generation system prompt with a "return only code"
+  directive — is not one of the things it serves.
+- `local_implement` is published only when `implement` or `fix` is on the list. The two
+  tools differ solely in which way wrapping falls with no task named; once a task is
+  named the profile decides and the tool name is inert. So on the helper there is one
+  tool, `local_direct`, and the coder keeps both.
 
 `classify` requires at least two `examples` — this is the measured few-shot requirement
 from the table above, now enforced by the schema rather than by prose.
