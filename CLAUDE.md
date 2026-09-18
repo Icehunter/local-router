@@ -23,6 +23,13 @@ Both tools take an optional `task`. Coder tier serves `implement`, `fix`, `revie
 `explain`; helper tier serves `summarize`, `extract`, `explain`, `classify`. Each
 instance declares its own list in `tasks`, and the published `task` enum reflects it.
 
+Both instances set this via `LOCAL_LLM_TIER` and `LOCAL_LLM_TASKS` in the `env` block of
+`~/.claude.json`. Leaving them unset publishes all seven tasks on both tiers, which is
+not a rejection at call time but an absence of gating: the 4B advertises `implement` and
+the caller finds out by reading the result. Gating also drives the schema — with
+`classify` excluded, the coder's `examples` property is dropped rather than merely
+rejected.
+
 `classify` requires at least two `examples` — this is the measured few-shot requirement
 from the table above, now enforced by the schema rather than by prose.
 
@@ -95,7 +102,16 @@ on this machine — never point config at `127.0.0.1`.
 `qwen3.8-27b` is a reasoning model: with thinking on it spends the token budget on
 `reasoning_content` and returns empty `content`, so lowering `maxTokens` starves the
 answer instead of shortening it. `enableThinking: false` is set for the coder; leave it
-that way unless you are deliberately testing it.
+that way unless you are deliberately testing it. It is also inherited by the helper via
+`config.json` — harmless there, measured: the 4B answers normally with the kwarg set.
+
+The coder's context is 32768 and it runs a **single slot**. Two coder calls do not
+overlap; the second waits. The helper has two slots at 16384 each, so its two calls do.
+`config.json` is the coder's config, so its `tokenBudget` must stay under 32768 —
+30000/8000 leaves 22000 tokens of prompt and 2768 of headroom for the chat template.
+The helper overrides both down to 14000/2000 for its smaller context, and overrides
+`requestTimeoutMs` to 45000: it inherits the coder's 300000 otherwise, which is five
+minutes of blocking on a tier whose calls take 1-20 seconds.
 
 ## Fallback behavior (local model errors)
 

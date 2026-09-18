@@ -141,6 +141,7 @@ Configuration resolves in this order, first match wins:
 - `LOCAL_LLM_REPEAT_PENALTY`
 - `LOCAL_LLM_DEBUG_LOG_PATH`
 - `LOCAL_LLM_ENABLE_THINKING` (`true` / `false` / `1` / `0`)
+- `LOCAL_LLM_TOOL_DESCRIPTION`
 - `LOCAL_LLM_TIER`
 - `LOCAL_LLM_TASKS` (comma-separated, e.g. `summarize,extract`)
 
