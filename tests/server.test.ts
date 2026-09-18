@@ -484,6 +484,89 @@ describe("handleToolCall — classify examples", () => {
   });
 });
 
+describe("handleToolCall — max_lines", () => {
+  it("rejects max_lines on implement, naming the accepting tasks", async () => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "implement", max_lines: 3 }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toBe(
+      '`max_lines` is only valid with task "review", "summarize", "extract"; got task "implement".',
+    );
+  });
+
+  it("rejects max_lines on fix", async () => {
+    await expect(
+      handleToolCall("local_direct", { prompt: "x", task: "fix", max_lines: 3 }, baseConfig),
+    ).rejects.toThrow(/`max_lines` is only valid with task "review", "summarize", "extract"; got task "fix"\./);
+  });
+
+  it("rejects max_lines on explain", async () => {
+    await expect(
+      handleToolCall("local_direct", { prompt: "x", task: "explain", max_lines: 3 }, baseConfig),
+    ).rejects.toThrow(/got task "explain"\./);
+  });
+
+  it("rejects max_lines on classify", async () => {
+    await expect(
+      handleToolCall(
+        "local_direct",
+        { prompt: "x", task: "classify", max_lines: 3, examples: [
+          { input: "a", output: "A" }, { input: "b", output: "B" },
+        ] },
+        baseConfig,
+      ),
+    ).rejects.toThrow(/got task "classify"\./);
+  });
+
+  it("rejects max_lines with no task at all", async () => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", max_lines: 3 }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toBe(
+      '`max_lines` is only valid with task "review", "summarize", "extract"; got task (none).',
+    );
+  });
+
+  it.each([0, -1, 1.5, NaN])("rejects max_lines = %s", async (bad) => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "summarize", max_lines: bad }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/`max_lines` must be a positive integer/);
+  });
+
+  it("rejects a string max_lines", async () => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "summarize", max_lines: "3" }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/`max_lines` must be a positive integer/);
+  });
+
+  it("rejects Infinity", async () => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "summarize", max_lines: Infinity }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/`max_lines` must be a positive integer/);
+  });
+
+  it("accepts a valid max_lines on summarize and sends it through to the prompt", async () => {
+    const fetchSpy = mockUpstream("ok");
+    await handleToolCall("local_direct", { prompt: "x", task: "summarize", max_lines: 4 }, baseConfig);
+    const body = JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
+    const userMsg = body.messages[body.messages.length - 1].content as string;
+    expect(userMsg.endsWith("Output at most 4 lines. Count them before you answer.")).toBe(true);
+  });
+
+  it("accepts a valid max_lines on extract and review", async () => {
+    mockUpstream("ok");
+    await expect(
+      handleToolCall("local_direct", { prompt: "x", task: "extract", max_lines: 2 }, baseConfig),
+    ).resolves.toBeDefined();
+    await expect(
+      handleToolCall("local_direct", { prompt: "x", task: "review", max_lines: 2 }, baseConfig),
+    ).resolves.toBeDefined();
+  });
+});
+
 describe("handleToolCall — task sampling overrides", () => {
   it("sends the profile temperature instead of the config temperature", async () => {
     const fetchSpy = mockUpstream("ok");
@@ -639,6 +722,29 @@ describe("buildToolDefinitions", () => {
     const [implement, direct] = buildToolDefinitions(baseConfig);
     expect(implement.name).toBe("local_implement");
     expect(direct.name).toBe("local_direct");
+  });
+
+  it("publishes max_lines when config.tasks is null", () => {
+    const [implement, direct] = buildToolDefinitions(baseConfig);
+    expect(prop(implement, "max_lines")).toEqual({
+      type: "integer",
+      minimum: 1,
+      description: expect.any(String),
+    });
+    expect(prop(direct, "max_lines")).toBeDefined();
+  });
+
+  it("publishes max_lines when at least one accepting task is allowed", () => {
+    const cfg: Config = { ...baseConfig, tasks: ["implement", "summarize"] };
+    const [implement] = buildToolDefinitions(cfg);
+    expect(prop(implement, "max_lines")).toBeDefined();
+  });
+
+  it("omits max_lines when the allowlist has no accepting task", () => {
+    const cfg: Config = { ...baseConfig, tasks: ["classify"] };
+    const [implement, direct] = buildToolDefinitions(cfg);
+    expect(prop(implement, "max_lines")).toBeUndefined();
+    expect(prop(direct, "max_lines")).toBeUndefined();
   });
 
   it("does not promise local_direct unconditional raw output", () => {

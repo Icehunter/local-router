@@ -229,3 +229,89 @@ describe("buildMessages with a task", () => {
     expect(TASK_PROFILES.extract.directive).toContain("NONE");
   });
 });
+
+describe("max_lines", () => {
+  it("only summarize, extract and review accept it", () => {
+    const accepting = TASKS.filter((t) => TASK_PROFILES[t].acceptsMaxLines);
+    expect(accepting).toEqual(["review", "summarize", "extract"]);
+  });
+
+  it("only summarize has a default", () => {
+    expect(TASK_PROFILES.summarize.defaultMaxLines).toBe(10);
+    expect(TASK_PROFILES.extract.defaultMaxLines).toBeUndefined();
+    expect(TASK_PROFILES.review.defaultMaxLines).toBeUndefined();
+  });
+
+  it("summarize's directive no longer defers to a number found in the prompt", () => {
+    expect(TASK_PROFILES.summarize.directive).toBe(
+      "Output the summary only. No preamble, no heading, no closing remark.",
+    );
+  });
+
+  it("appends the literal line-count sentence at the very end of the user turn", () => {
+    const m = buildMessages({ prompt: "x", task: "summarize", max_lines: 4 });
+    const user = m[m.length - 1].content;
+    expect(user.endsWith("Output at most 4 lines. Count them before you answer.")).toBe(true);
+  });
+
+  it("explicit max_lines beats the profile default", () => {
+    const m = buildMessages({ prompt: "x", task: "summarize", max_lines: 3 });
+    const user = m[m.length - 1].content;
+    expect(user).toContain("Output at most 3 lines.");
+    expect(user).not.toContain("Output at most 10 lines.");
+  });
+
+  it("summarize with no max_lines falls back to the 10-line default", () => {
+    const m = buildMessages({ prompt: "x", task: "summarize" });
+    const user = m[m.length - 1].content;
+    expect(user.endsWith("Output at most 10 lines. Count them before you answer.")).toBe(true);
+  });
+
+  it("extract and review with no max_lines get no line sentence at all", () => {
+    const extractMsg = buildMessages({ prompt: "x", task: "extract" });
+    const reviewMsg = buildMessages({ prompt: "x", task: "review" });
+    expect(extractMsg[extractMsg.length - 1].content).not.toContain("Output at most");
+    expect(reviewMsg[reviewMsg.length - 1].content).not.toContain("Output at most");
+  });
+
+  it("explicit max_lines still applies to extract and review", () => {
+    const extractMsg = buildMessages({ prompt: "x", task: "extract", max_lines: 5 });
+    const reviewMsg = buildMessages({ prompt: "x", task: "review", max_lines: 2 });
+    expect(extractMsg[extractMsg.length - 1].content).toContain(
+      "Output at most 5 lines. Count them before you answer.",
+    );
+    expect(reviewMsg[reviewMsg.length - 1].content).toContain(
+      "Output at most 2 lines. Count them before you answer.",
+    );
+  });
+
+  it("uses singular wording for a count of 1", () => {
+    const m = buildMessages({ prompt: "x", task: "summarize", max_lines: 1 });
+    const user = m[m.length - 1].content;
+    expect(user.endsWith("Output at most 1 line. Count them before you answer.")).toBe(true);
+  });
+
+  it("tasks without acceptsMaxLines ignore max_lines entirely if it somehow reaches buildMessages", () => {
+    // server.ts is the enforcement point; buildMessages itself just honors an
+    // explicit max_lines regardless of task, since it does no task-gating.
+    const m = buildMessages({ prompt: "x", task: "explain", max_lines: 3 });
+    const user = m[m.length - 1].content;
+    expect(user).toContain("Output at most 3 lines.");
+  });
+
+  it("appends the sentence after the directive, separated by a single space", () => {
+    const m = buildMessages({ prompt: "x", task: "summarize", max_lines: 4 });
+    const user = m[m.length - 1].content;
+    expect(user).toBe(
+      "x\n\n---\n\nOutput the summary only. No preamble, no heading, no closing remark. " +
+        "Output at most 4 lines. Count them before you answer.",
+    );
+  });
+
+  it("with no task and no max_lines, output is unchanged from the legacy form", () => {
+    const m = buildMessages({ prompt: "write hello" });
+    expect(m[1].content).toBe(
+      "write hello\n\n---\n\nReturn only code. No prose, no fences unless syntactically required by the language.",
+    );
+  });
+});

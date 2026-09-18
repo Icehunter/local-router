@@ -45,6 +45,10 @@ export interface TaskProfile {
   temperature?: number;
   /** Only ever lowers config.maxTokens; never raises it. */
   maxTokens?: number;
+  /** Whether `max_lines` is meaningful for this task's output shape. */
+  acceptsMaxLines?: boolean;
+  /** Used when the caller gives no max_lines. */
+  defaultMaxLines?: number;
 }
 
 export const TASK_PROFILES: Record<Task, TaskProfile> = {
@@ -88,6 +92,7 @@ export const TASK_PROFILES: Record<Task, TaskProfile> = {
     wrap: false,
     temperature: 0.2,
     maxTokens: 1500,
+    acceptsMaxLines: true,
   },
   summarize: {
     system:
@@ -97,12 +102,12 @@ export const TASK_PROFILES: Record<Task, TaskProfile> = {
       "Merge items that say the same thing into one line. " +
       "Do not add information that is not in the input. " +
       "Do not interpret, rank, recommend, or draw conclusions.",
-    directive:
-      "Output the summary only. No preamble, no heading, no closing remark. " +
-      "Do not exceed the line or item count the prompt asks for; if it asks for none, use at most 10 lines.",
+    directive: "Output the summary only. No preamble, no heading, no closing remark.",
     wrap: false,
     temperature: 0,
     maxTokens: 1000,
+    acceptsMaxLines: true,
+    defaultMaxLines: 10,
   },
   extract: {
     system:
@@ -116,6 +121,7 @@ export const TASK_PROFILES: Record<Task, TaskProfile> = {
     wrap: false,
     temperature: 0,
     maxTokens: 1000,
+    acceptsMaxLines: true,
   },
   explain: {
     system:
@@ -150,6 +156,7 @@ export interface BuildMessagesInput {
   output_format?: OutputFormat;
   task?: Task;
   examples?: FewShotExample[];
+  max_lines?: number;
 }
 
 export const REVIEW_REMINDER =
@@ -199,6 +206,18 @@ export function buildMessages(input: BuildMessagesInput): ChatMessage[] {
     messages.push({ role: "user", content: example.input });
     messages.push({ role: "assistant", content: example.output });
   }
-  messages.push({ role: "user", content: `${input.prompt}\n\n---\n\n${directive}` });
+  // A cap phrased as "use the count the prompt asks for" makes the model go find and
+  // apply a number elsewhere in the prompt, which a 4B model does not do reliably —
+  // asked for 4 lines that way, it returned 8. Spelling out the literal digit here,
+  // as the last sentence the model reads, is what it actually follows.
+  const lines = input.max_lines ?? profile?.defaultMaxLines;
+  const lineSentence =
+    lines !== undefined
+      ? ` Output at most ${lines} ${lines === 1 ? "line" : "lines"}. Count them before you answer.`
+      : "";
+  messages.push({
+    role: "user",
+    content: `${input.prompt}\n\n---\n\n${directive}${lineSentence}`,
+  });
   return messages;
 }

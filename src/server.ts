@@ -47,6 +47,16 @@ const BASE_TOOL_PROPERTIES = {
   },
 };
 
+const MAX_LINES_TASKS: readonly Task[] = TASKS.filter((t) => TASK_PROFILES[t].acceptsMaxLines);
+
+const MAX_LINES_PROPERTY = {
+  type: "integer",
+  minimum: 1,
+  description:
+    `Caps the number of output lines. Valid only with task ${MAX_LINES_TASKS.map((t) => `"${t}"`).join(", ")}. ` +
+    "Omitting it uses the task's own default line cap where one exists (summarize defaults to 10).",
+};
+
 const EXAMPLES_PROPERTY = {
   type: "array",
   minItems: 2,
@@ -100,6 +110,9 @@ export function buildToolDefinitions(config: Config) {
   if (allowed.includes("classify")) {
     properties.examples = EXAMPLES_PROPERTY;
   }
+  if (allowed.some((t) => MAX_LINES_TASKS.includes(t))) {
+    properties.max_lines = MAX_LINES_PROPERTY;
+  }
   const inputSchema = { type: "object", properties, required: ["prompt"] };
 
   const tierLine =
@@ -121,13 +134,14 @@ type ToolArgs = {
   include_review_reminder?: unknown;
   task?: unknown;
   examples?: unknown;
+  max_lines?: unknown;
 };
 
 const OUTPUT_FORMATS: readonly OutputFormat[] = ["code", "diff", "explanation"];
 const MODES = ["delegate", "direct"] as const;
 const KNOWN_ARGS = new Set([
   "prompt", "system", "output_format", "mode", "include_review_reminder",
-  "task", "examples",
+  "task", "examples", "max_lines",
 ]);
 
 const EXAMPLES_REQUIRED =
@@ -287,6 +301,26 @@ export async function handleToolCall(
     throw new Error(EXAMPLES_REQUIRED);
   }
 
+  let max_lines: number | undefined;
+  if (args.max_lines !== undefined) {
+    // Number.isInteger rejects NaN, Infinity and non-integers in one check;
+    // typeof guards a string like "3" that would otherwise pass loose comparison.
+    if (
+      typeof args.max_lines !== "number" ||
+      !Number.isInteger(args.max_lines) ||
+      args.max_lines < 1
+    ) {
+      throw new Error(`\`max_lines\` must be a positive integer; got: ${short(args.max_lines)}`);
+    }
+    if (task === undefined || !TASK_PROFILES[task].acceptsMaxLines) {
+      throw new Error(
+        `\`max_lines\` is only valid with task ${MAX_LINES_TASKS.map((t) => `"${t}"`).join(", ")}; got task ` +
+          `${task !== undefined ? `"${task}"` : "(none)"}.`,
+      );
+    }
+    max_lines = args.max_lines;
+  }
+
   const profile = task !== undefined ? TASK_PROFILES[task] : undefined;
   // A spread copy rather than extra parameters: local-client.ts already reads
   // every sampling value off the config object it is handed.
@@ -296,7 +330,7 @@ export async function handleToolCall(
     maxTokens: Math.min(profile?.maxTokens ?? config.maxTokens, config.maxTokens),
   };
 
-  const messages = buildMessages({ prompt: args.prompt, system, output_format, task, examples });
+  const messages = buildMessages({ prompt: args.prompt, system, output_format, task, examples, max_lines });
   const totalText = messages.map((m) => m.content).join("\n");
   const estimated = estimateTokens(totalText);
   if (estimated + effectiveConfig.maxTokens > effectiveConfig.tokenBudget) {
