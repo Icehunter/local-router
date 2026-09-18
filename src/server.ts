@@ -274,7 +274,7 @@ export async function handleToolCall(
       const unknownKeys = Object.keys(ex as object).filter((k) => k !== "input" && k !== "output");
       if (unknownKeys.length > 0) {
         throw new Error(
-          `\`examples[${i}]\` has unrecognized key(s): ${unknownKeys.join(", ")}. ` +
+          `\`examples[${i}]\` has unrecognized key(s): ${short(unknownKeys.join(", "))}. ` +
             `Only \`input\` and \`output\` are valid; got: ${short(ex)}`,
         );
       }

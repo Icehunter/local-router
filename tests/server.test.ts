@@ -469,6 +469,18 @@ describe("handleToolCall — classify examples", () => {
     expect(err.message).toMatch(/`examples\[0\]`/);
     expect(err.message).toMatch(/extra/);
   });
+
+  it("does not echo unbounded example key names in the error", async () => {
+    const hostileKey = "x".repeat(5000);
+    const err = (await handleToolCall(
+      "local_direct",
+      { prompt: "x", task: "classify", examples: [{ ...twoExamples[0], [hostileKey]: "value" }, twoExamples[1]] },
+      baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message.length).toBeLessThan(400);
+    expect(err.message).toMatch(/`examples\[0\]`/);
+    expect(err.message).toMatch(/has unrecognized key/);
+  });
 });
 
 describe("handleToolCall — task sampling overrides", () => {
