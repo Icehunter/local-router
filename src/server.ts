@@ -9,8 +9,8 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { loadConfig } from "./config.js";
 import type { Config } from "./config.js";
-import { buildMessages, wrapWithReviewReminder } from "./prompt.js";
-import type { OutputFormat } from "./prompt.js";
+import { buildMessages, wrapWithReviewReminder, TASKS, TASK_PROFILES } from "./prompt.js";
+import type { OutputFormat, Task, TaskProfile, FewShotExample } from "./prompt.js";
 import { callLocalModel } from "./local-client.js";
 import { estimateTokens } from "./tokens.js";
 
@@ -75,13 +75,20 @@ type ToolArgs = {
   output_format?: unknown;
   mode?: unknown;
   include_review_reminder?: unknown;
+  task?: unknown;
+  examples?: unknown;
 };
 
 const OUTPUT_FORMATS: readonly OutputFormat[] = ["code", "diff", "explanation"];
 const MODES = ["delegate", "direct"] as const;
 const KNOWN_ARGS = new Set([
   "prompt", "system", "output_format", "mode", "include_review_reminder",
+  "task", "examples",
 ]);
+
+const EXAMPLES_REQUIRED =
+  '`examples` is required when task is "classify" and must contain at least 2 entries. ' +
+  "Without examples this model returns the same label for every input.";
 
 /** Keeps a hostile or accidental multi-KB argument out of the error response. */
 function short(value: unknown): string {
@@ -98,12 +105,17 @@ export function withRoleDescription<T extends { description: string }>(
   return { ...tool, description: `${tool.description} THIS INSTANCE: ${roleDescription}` };
 }
 
-export function shouldWrapOutput(toolName: string, args: ToolArgs): boolean {
+export function shouldWrapOutput(
+  toolName: string,
+  args: ToolArgs,
+  profile?: TaskProfile,
+): boolean {
   if (typeof args.include_review_reminder === "boolean") {
     return args.include_review_reminder;
   }
   if (args.mode === "direct") return false;
   if (args.mode === "delegate") return true;
+  if (profile !== undefined) return profile.wrap;
   return toolName === TOOL_IMPLEMENT;
 }
 
@@ -156,26 +168,85 @@ export async function handleToolCall(
     output_format = args.output_format as OutputFormat;
   }
 
-  const messages = buildMessages({ prompt: args.prompt, system, output_format });
+  let task: Task | undefined;
+  if (args.task !== undefined) {
+    if (typeof args.task !== "string" || !(TASKS as readonly string[]).includes(args.task)) {
+      throw new Error(
+        `\`task\` must be one of ${TASKS.join(", ")}; got: ${short(args.task)}`,
+      );
+    }
+    task = args.task as Task;
+    if (config.tasks !== null && !config.tasks.includes(task)) {
+      throw new Error(
+        `Task "${task}" is not accepted by this instance` +
+          (config.tier !== null ? ` (tier: ${config.tier})` : "") +
+          `. Accepted tasks: ${config.tasks.join(", ")}. ` +
+          `Route this task to the instance configured for it.`,
+      );
+    }
+  }
+
+  let examples: FewShotExample[] | undefined;
+  if (args.examples !== undefined) {
+    if (task !== "classify") {
+      throw new Error(
+        `\`examples\` is only valid with task "classify"; got task ` +
+          `${task !== undefined ? `"${task}"` : "(none)"}.`,
+      );
+    }
+    if (!Array.isArray(args.examples) || args.examples.length < 2) {
+      throw new Error(EXAMPLES_REQUIRED);
+    }
+    args.examples.forEach((ex: unknown, i: number) => {
+      const e = ex as Partial<FewShotExample>;
+      if (
+        ex === null || typeof ex !== "object" || Array.isArray(ex) ||
+        typeof e.input !== "string" || e.input.trim() === "" ||
+        typeof e.output !== "string" || e.output.trim() === ""
+      ) {
+        throw new Error(
+          `\`examples[${i}]\` must be an object with non-empty string \`input\` and ` +
+            `\`output\`; got: ${short(ex)}`,
+        );
+      }
+    });
+    examples = args.examples as FewShotExample[];
+  }
+  // Checked after the shape validation so a caller sending one malformed example
+  // gets the specific complaint rather than the generic "required" message.
+  if (task === "classify" && examples === undefined) {
+    throw new Error(EXAMPLES_REQUIRED);
+  }
+
+  const profile = task !== undefined ? TASK_PROFILES[task] : undefined;
+  // A spread copy rather than extra parameters: local-client.ts already reads
+  // every sampling value off the config object it is handed.
+  const effectiveConfig: Config = {
+    ...config,
+    temperature: profile?.temperature ?? config.temperature,
+    maxTokens: Math.min(profile?.maxTokens ?? config.maxTokens, config.maxTokens),
+  };
+
+  const messages = buildMessages({ prompt: args.prompt, system, output_format, task, examples });
   const totalText = messages.map((m) => m.content).join("\n");
   const estimated = estimateTokens(totalText);
-  if (estimated + config.maxTokens > config.tokenBudget) {
+  if (estimated + effectiveConfig.maxTokens > effectiveConfig.tokenBudget) {
     throw new Error(
-      `Prompt exceeds tokenBudget: estimated ${estimated} prompt tokens + ${config.maxTokens} ` +
-        `reserved for the response = ${estimated + config.maxTokens}, over the budget of ${config.tokenBudget}. ` +
+      `Prompt exceeds tokenBudget: estimated ${estimated} prompt tokens + ${effectiveConfig.maxTokens} ` +
+        `reserved for the response = ${estimated + effectiveConfig.maxTokens}, over the budget of ${effectiveConfig.tokenBudget}. ` +
         `Reduce scope, lower maxTokens, or raise tokenBudget in config.`,
     );
   }
 
-  const result = await callLocalModel(messages, config, signal);
-  const body = shouldWrapOutput(toolName, args)
+  const result = await callLocalModel(messages, effectiveConfig, signal);
+  const body = shouldWrapOutput(toolName, args, profile)
     ? wrapWithReviewReminder(result.content)
     : result.content;
   // Appended outside the wrapper so it reads as the plugin's voice, not the model's.
   const text =
     result.finishReason === "length"
       ? `${body}\n\n[local-router] WARNING: the local model stopped at max_tokens ` +
-        `(${config.maxTokens}), so the output above is cut off mid-generation. ` +
+        `(${effectiveConfig.maxTokens}), so the output above is cut off mid-generation. ` +
         `Raise maxTokens or narrow the request before applying it.`
       : body;
   return { content: [{ type: "text", text }] };

@@ -305,3 +305,194 @@ describe("server.onerror wiring", () => {
     expect(src).toMatch(/server\.onerror\s*=\s*logProtocolError/);
   });
 });
+
+describe("handleToolCall — task validation and gating", () => {
+  it("rejects an unknown task and names the valid ones", async () => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "transpile" }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/`task` must be one of/);
+    expect(err.message).toMatch(/implement, fix, review, summarize, extract, explain, classify/);
+  });
+
+  it("allows every task when config.tasks is null", async () => {
+    // "summarize" (wrap: false) rather than "implement": this test is about
+    // gating, not wrapping, and the implement profile's wrap: true would make
+    // a raw-text assertion collide with the wrap-precedence tests below.
+    mockUpstream("ok");
+    const res = await handleToolCall("local_direct", { prompt: "x", task: "summarize" }, baseConfig);
+    expect(res.content[0].text).toBe("ok");
+  });
+
+  it("rejects a task this instance does not accept, naming tier and the accepted list", async () => {
+    const cfg: Config = { ...baseConfig, tier: "helper", tasks: ["summarize", "extract"] };
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "implement" }, cfg,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toBe(
+      'Task "implement" is not accepted by this instance (tier: helper). ' +
+        "Accepted tasks: summarize, extract. " +
+        "Route this task to the instance configured for it.",
+    );
+  });
+
+  it("omits the tier clause when no tier is declared", async () => {
+    const cfg: Config = { ...baseConfig, tasks: ["summarize"] };
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "implement" }, cfg,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/not accepted by this instance\. Accepted tasks: summarize\./);
+  });
+
+  it("rejects an unknown argument name as before, now including task in the valid list", async () => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", taks: "fix" }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/Unrecognized argument\(s\): taks/);
+    expect(err.message).toMatch(/task/);
+    expect(err.message).toMatch(/examples/);
+  });
+});
+
+describe("handleToolCall — classify examples", () => {
+  const twoExamples = [
+    { input: "rename a variable", output: "TRIVIAL" },
+    { input: "rewrite the scheduler", output: "NONTRIVIAL" },
+  ];
+
+  it("rejects classify with no examples", async () => {
+    const err = (await handleToolCall(
+      "local_direct", { prompt: "x", task: "classify" }, baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/`examples` is required when task is "classify"/);
+    expect(err.message).toMatch(/same label for every input/);
+  });
+
+  it("rejects classify with fewer than two examples", async () => {
+    await expect(handleToolCall(
+      "local_direct", { prompt: "x", task: "classify", examples: [twoExamples[0]] }, baseConfig,
+    )).rejects.toThrow(/at least 2 entries/);
+  });
+
+  it("rejects examples on a non-classify task", async () => {
+    await expect(handleToolCall(
+      "local_direct", { prompt: "x", task: "summarize", examples: twoExamples }, baseConfig,
+    )).rejects.toThrow(/only valid with task "classify"; got task "summarize"/);
+  });
+
+  it("rejects examples with no task at all", async () => {
+    await expect(handleToolCall(
+      "local_direct", { prompt: "x", examples: twoExamples }, baseConfig,
+    )).rejects.toThrow(/only valid with task "classify"; got task \(none\)/);
+  });
+
+  it("rejects a malformed example entry without echoing an unbounded value", async () => {
+    const err = (await handleToolCall(
+      "local_direct",
+      { prompt: "x", task: "classify", examples: [{ input: "a", output: "" }, { input: "b".repeat(5000), output: "B" }] },
+      baseConfig,
+    ).catch((e: Error) => e)) as Error;
+    expect(err.message).toMatch(/`examples\[0\]` must be an object with non-empty string/);
+    expect(err.message.length).toBeLessThan(400);
+  });
+
+  it("sends the examples upstream as alternating turns", async () => {
+    const fetchSpy = mockUpstream("TRIVIAL");
+    await handleToolCall(
+      "local_direct", { prompt: "add a log line", task: "classify", examples: twoExamples }, baseConfig,
+    );
+    const body = JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
+    expect(body.messages.map((m: { role: string }) => m.role)).toEqual([
+      "system", "user", "assistant", "user", "assistant", "user",
+    ]);
+  });
+});
+
+describe("handleToolCall — task sampling overrides", () => {
+  it("sends the profile temperature instead of the config temperature", async () => {
+    const fetchSpy = mockUpstream("ok");
+    await handleToolCall("local_direct", { prompt: "x", task: "summarize" }, baseConfig);
+    const body = JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
+    expect(body.temperature).toBe(0);
+  });
+
+  it("sends the config temperature when there is no task", async () => {
+    const fetchSpy = mockUpstream("ok");
+    await handleToolCall("local_direct", { prompt: "x" }, baseConfig);
+    const body = JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
+    expect(body.temperature).toBe(0.7);
+  });
+
+  it("lowers max_tokens to the profile cap", async () => {
+    // classify requires >= 2 examples (see "classify examples" above); this
+    // test is about the max_tokens override, so it supplies the minimum valid set.
+    const fetchSpy = mockUpstream("ok");
+    await handleToolCall("local_direct", { prompt: "x", task: "classify", examples: [
+      { input: "a", output: "A" }, { input: "b", output: "B" },
+    ] }, baseConfig);
+    const body = JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
+    expect(body.max_tokens).toBe(50);
+  });
+
+  it("never raises max_tokens above the configured ceiling", async () => {
+    const cfg: Config = { ...baseConfig, maxTokens: 20 };
+    const fetchSpy = mockUpstream("ok");
+    await handleToolCall("local_direct", { prompt: "x", task: "review" }, cfg);
+    const body = JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body));
+    expect(body.max_tokens).toBe(20);
+  });
+
+  it("reserves only the effective maxTokens in the budget precondition", async () => {
+    // 500 budget: the 1000 config ceiling would reject this (1000 + prompt > 500);
+    // the classify profile's 50-token cap does not.
+    const cfg: Config = { ...baseConfig, tokenBudget: 500, maxTokens: 1000 };
+    mockUpstream("TRIVIAL");
+    const res = await handleToolCall(
+      "local_direct",
+      { prompt: "x", task: "classify", examples: [
+        { input: "a", output: "A" }, { input: "b", output: "B" },
+      ] },
+      cfg,
+    );
+    expect(res.content[0].text).toBe("TRIVIAL");
+  });
+
+  it("names the effective maxTokens in the truncation warning", async () => {
+    mockUpstream("cut off", "length");
+    const res = await handleToolCall("local_direct", { prompt: "x", task: "classify", examples: [
+      { input: "a", output: "A" }, { input: "b", output: "B" },
+    ] }, baseConfig);
+    expect(res.content[0].text).toMatch(/stopped at max_tokens \(50\)/);
+  });
+});
+
+describe("handleToolCall — task wrapping defaults", () => {
+  it("wraps a fix on local_direct because the profile says so", async () => {
+    mockUpstream("code");
+    const res = await handleToolCall("local_direct", { prompt: "x", task: "fix" }, baseConfig);
+    expect(res.content[0].text).toContain("<local_output");
+  });
+
+  it("does not wrap a review on local_implement because the profile says so", async () => {
+    mockUpstream("NONE");
+    const res = await handleToolCall("local_implement", { prompt: "x", task: "review" }, baseConfig);
+    expect(res.content[0].text).toBe("NONE");
+  });
+
+  it("mode still outranks the profile", async () => {
+    mockUpstream("NONE");
+    const res = await handleToolCall(
+      "local_implement", { prompt: "x", task: "review", mode: "delegate" }, baseConfig);
+    expect(res.content[0].text).toContain("<local_output");
+  });
+
+  it("include_review_reminder still outranks everything", async () => {
+    mockUpstream("code");
+    const res = await handleToolCall(
+      "local_direct",
+      { prompt: "x", task: "fix", mode: "delegate", include_review_reminder: false },
+      baseConfig,
+    );
+    expect(res.content[0].text).toBe("code");
+  });
+});
