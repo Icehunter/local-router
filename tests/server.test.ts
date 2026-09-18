@@ -1,13 +1,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   buildToolDefinitions,
+  createServer,
   handleToolCall,
   logProtocolError,
   shouldWrapOutput,
   withRoleDescription,
 } from "../src/server.js";
 import type { Config } from "../src/config.js";
-import { readFileSync } from "node:fs";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 const baseConfig: Config = {
   baseUrl: "http://test-host:1234",
@@ -305,10 +307,9 @@ describe("handleToolCall — cancellation", () => {
   });
 });
 
-describe("server.onerror wiring", () => {
-  it("is actually assigned to logProtocolError, not merely defined", async () => {
-    const src = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
-    expect(src).toMatch(/server\.onerror\s*=\s*logProtocolError/);
+describe("createServer — onerror wiring", () => {
+  it("is actually assigned to logProtocolError, not merely defined", () => {
+    expect(createServer(baseConfig).onerror).toBe(logProtocolError);
   });
 });
 
@@ -603,14 +604,16 @@ describe("buildToolDefinitions", () => {
 
   it("omits the examples property when classify is not allowed", () => {
     const cfg: Config = { ...baseConfig, tasks: ["summarize"] };
-    const [implement] = buildToolDefinitions(cfg);
+    const [implement, direct] = buildToolDefinitions(cfg);
     expect(prop(implement, "examples")).toBeUndefined();
+    expect(prop(direct, "examples")).toBeUndefined();
   });
 
   it("includes the examples property when classify is allowed", () => {
     const cfg: Config = { ...baseConfig, tasks: ["classify"] };
-    const [implement] = buildToolDefinitions(cfg);
+    const [implement, direct] = buildToolDefinitions(cfg);
     expect(prop(implement, "examples").minItems).toBe(2);
+    expect(prop(direct, "examples").minItems).toBe(2);
   });
 
   it("appends the tier line to both descriptions", () => {
@@ -647,9 +650,43 @@ describe("buildToolDefinitions", () => {
   });
 });
 
-describe("ListTools wiring", () => {
-  it("serves the config-derived definitions, not the static constants", async () => {
-    const src = readFileSync(new URL("../src/server.ts", import.meta.url), "utf8");
-    expect(src).toMatch(/tools:\s*buildToolDefinitions\(config\)/);
+describe("createServer — ListTools wiring", () => {
+  // Connects a real Client to createServer(config) over an in-memory transport
+  // and calls the actual listTools request, rather than asserting on server.ts's
+  // source text: a source-regex test stays green even if the handler stops
+  // calling buildToolDefinitions(config) and starts serving something stale.
+  async function listToolsOver(config: Config) {
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = createServer(config);
+    const client = new Client({ name: "test-client", version: "0.1.0" });
+    await Promise.all([
+      server.connect(serverTransport),
+      client.connect(clientTransport),
+    ]);
+    const { tools } = await client.listTools();
+    await client.close();
+    await server.close();
+    return tools;
+  }
+
+  it("publishes the full task enum and no tier line when config.tasks is null", async () => {
+    const tools = await listToolsOver(baseConfig);
+    const implement = tools.find((t) => t.name === "local_implement")!;
+    expect((implement.inputSchema.properties as Record<string, any>).task.enum).toEqual([
+      "implement", "fix", "review", "summarize", "extract", "explain", "classify",
+    ]);
+    expect(implement.description).not.toContain("Tier:");
+  });
+
+  it("publishes only the allowlisted tasks and the tier line for a narrow config", async () => {
+    const cfg: Config = { ...baseConfig, tier: "helper", tasks: ["summarize", "extract"] };
+    const tools = await listToolsOver(cfg);
+    const implement = tools.find((t) => t.name === "local_implement")!;
+    const direct = tools.find((t) => t.name === "local_direct")!;
+    expect((implement.inputSchema.properties as Record<string, any>).task.enum).toEqual([
+      "summarize", "extract",
+    ]);
+    expect(implement.description).toContain("Tier: helper. Accepts: summarize, extract.");
+    expect(direct.description).toContain("Tier: helper. Accepts: summarize, extract.");
   });
 });

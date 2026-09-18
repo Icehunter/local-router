@@ -332,9 +332,12 @@ export function logProtocolError(err: unknown): void {
   process.stderr.write(`[local-router] protocol error: ${message}\n`);
 }
 
-async function main(): Promise<void> {
-  const config = loadConfig();
-
+/**
+ * Split from main() so tests can exercise the real wiring — onerror assignment,
+ * both request handlers — over an in-memory transport instead of asserting on
+ * server.ts's source text. Connects no transport itself.
+ */
+export function createServer(config: Config): Server {
   const server = new Server(
     { name: "local-router", version: "0.1.0" },
     { capabilities: { tools: {} } },
@@ -350,6 +353,12 @@ async function main(): Promise<void> {
     handleToolCall(req.params.name, req.params.arguments, config, extra?.signal),
   );
 
+  return server;
+}
+
+async function main(): Promise<void> {
+  const config = loadConfig();
+  const server = createServer(config);
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

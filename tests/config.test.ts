@@ -482,6 +482,8 @@ describe("loadConfig — unexpanded ${VAR} placeholders", () => {
     "LOCAL_LLM_API_KEY",
     "LOCAL_LLM_DEBUG_LOG_PATH",
     "LOCAL_LLM_TOOL_DESCRIPTION",
+    "LOCAL_LLM_TIER",
+    "LOCAL_LLM_TASKS",
   ] as const;
 
   for (const v of PLACEHOLDER_VARS) {
