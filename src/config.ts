@@ -58,10 +58,13 @@ const ConfigSchema = z.object({
   tasks: z
     .array(z.enum(TASKS))
     .nonempty()
-    .refine(
-      (arr) => findDuplicates(arr).length === 0,
-      (arr) => ({ message: `tasks contains duplicate value(s): ${findDuplicates(arr).join(", ")}` }),
-    )
+    // zod 4 dropped the function-as-second-argument form for a message computed
+    // from the input; `error` takes that callback now, and reaches the offending
+    // value through `issue.input` rather than a parameter.
+    .refine((arr) => findDuplicates(arr).length === 0, {
+      error: (issue) =>
+        `tasks contains duplicate value(s): ${findDuplicates(issue.input as readonly string[]).join(", ")}`,
+    })
     .nullable()
     .default(null),
 });
