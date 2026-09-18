@@ -254,9 +254,89 @@ Then `model` in your config should be `qwen3-coder`.
 
 ## Use
 
-In any Claude Code session, just ask Claude to do something. Claude decides when to delegate to the local model — typically for the actual code-writing step of a multi-step task.
+Delegation is **opt-in**. Your agent does the work itself unless you ask for the local
+model, so nothing silently leaves your machine because a change looked big.
 
-You can also nudge it explicitly: "Have the local model implement this part."
+### Say it in plain English
+
+You never type a tool name or a JSON argument. You say what you want and which box
+should do it; the agent picks the tool and the `task`.
+
+| Say something like | Tool the agent calls | `task` |
+|---|---|---|
+| "have the local model write the retry wrapper for `client.ts`" | `local_implement` (coder) | `implement` |
+| "let the local model fix this failing test" | `local_implement` (coder) | `fix` |
+| "have the local model check that diff for missing imports and typos" | `local_direct` (coder) | `review` |
+| "get the local model to explain what `server.ts` is doing" | `local_direct` (coder) | `explain` |
+| "squash this 400-line log down with the helper" | `local_direct` (helper) | `summarize` |
+| "use the helper to list every exported function in these files" | `local_direct` (helper) | `extract` |
+| "have the helper label each of these tickets trivial or not — here are four examples" | `local_direct` (helper) | `classify` |
+
+The words that matter are **which model** ("the local model", "the helper", "the 27B",
+"the small one") and **what kind of job**. Everything else is ordinary English.
+
+Useful phrasings:
+
+- **Pick the tier explicitly.** "Use the *helper* for this, not the 27B" — the 4B is much
+  faster and the GPU box serializes its calls.
+- **Turn it on for a stretch.** "For the rest of this session, route all summarizing and
+  log compression to the helper." The agent keeps doing it until you say stop.
+- **Ask for a bound.** "Summarize that in at most 5 lines" becomes `max_lines: 5`.
+- **Hand over the review.** "Have the local model write it, then you review it before
+  applying" — this is the intended loop, and it is what the plugin nudges toward anyway.
+
+### What comes back
+
+`implement` and `fix` return their output wrapped in a `<local_output id="…">` block with
+a review reminder attached. That is deliberate: the wrapper marks the text as untrusted
+model output rather than instructions, and the reminder tells your agent to review before
+writing anything to disk. You will usually see the agent read the result, check it, and
+only then edit your files.
+
+Everything else — `review`, `explain`, `summarize`, `extract`, `classify` — comes back as
+plain text with no wrapper, because none of it is code you are about to apply.
+
+### Two boxes, two jobs
+
+A typical setup runs two instances of this plugin against two different models: a large
+one for writing code and a small fast one for text chores. Point them at different
+backends and give each a `tasks` allowlist, and the agent can no longer send a
+summarization job to the expensive model or ask the 4B to write code — the wrong task
+is not in the published schema, so it is unreachable rather than merely a bad idea.
+
+```jsonc
+// coder: the big model
+"LOCAL_LLM_TIER": "coder",
+"LOCAL_LLM_TASKS": "implement,fix,review,explain",
+"LOCAL_LLM_TOOL_DESCRIPTION": "27B GPU model. Use for writing and refactoring code."
+
+// helper: the small model
+"LOCAL_LLM_TIER": "helper",
+"LOCAL_LLM_TASKS": "summarize,extract,explain,classify",
+"LOCAL_LLM_TOOL_DESCRIPTION": "4B CPU model, fast. Use for summaries, extraction, classification."
+```
+
+`LOCAL_LLM_TOOL_DESCRIPTION` is what the agent reads to tell the two apart, so write it
+as advice to the agent, not as a label.
+
+### Calling it from something other than Claude Code
+
+It is an ordinary stdio MCP server, so any MCP client can drive it. One required argument,
+`prompt`, plus `task` on any instance that declares a `tasks` allowlist:
+
+```json
+{
+  "name": "local_direct",
+  "arguments": {
+    "task": "summarize",
+    "max_lines": 5,
+    "prompt": "Summarize the following build log, keeping every error string.\n\n<log text>"
+  }
+}
+```
+
+The server has no filesystem access — whatever the model needs to see has to be in
+`prompt`. Assembling that context is the calling agent's job.
 
 ## Fallback behavior
 
