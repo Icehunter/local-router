@@ -24,6 +24,8 @@ beforeEach(() => {
   delete process.env.LOCAL_LLM_DEBUG_LOG_PATH;
   delete process.env.LOCAL_LLM_ENABLE_THINKING;
   delete process.env.LOCAL_LLM_TOOL_DESCRIPTION;
+  delete process.env.LOCAL_LLM_TIER;
+  delete process.env.LOCAL_LLM_TASKS;
 });
 
 afterEach(() => {
@@ -594,5 +596,83 @@ describe("loadConfig — misspelled env vars", () => {
     expect(msg).toContain("LOCAL_LLM_MAXTOKENS");
     warn.mockRestore();
     delete process.env.LOCAL_LLM_MAXTOKENS;
+  });
+});
+
+describe("tier and tasks", () => {
+  function writeBase(extra: Record<string, unknown> = {}) {
+    writeFileSync(
+      join(tempDir, "config.json"),
+      JSON.stringify({ baseUrl: "http://1.2.3.4:1234", model: "m", ...extra }),
+    );
+  }
+
+  it("defaults both to null, meaning undeclared and all tasks allowed", () => {
+    writeBase();
+    const cfg = loadConfig();
+    expect(cfg.tier).toBeNull();
+    expect(cfg.tasks).toBeNull();
+  });
+
+  it("reads tier and tasks from config.json", () => {
+    writeBase({ tier: "helper", tasks: ["summarize", "extract"] });
+    const cfg = loadConfig();
+    expect(cfg.tier).toBe("helper");
+    expect(cfg.tasks).toEqual(["summarize", "extract"]);
+  });
+
+  it("reads tier and tasks from env, overriding the file", () => {
+    writeBase({ tier: "coder", tasks: ["implement"] });
+    process.env.LOCAL_LLM_TIER = "helper";
+    process.env.LOCAL_LLM_TASKS = "summarize,extract";
+    const cfg = loadConfig();
+    expect(cfg.tier).toBe("helper");
+    expect(cfg.tasks).toEqual(["summarize", "extract"]);
+  });
+
+  it("tolerates whitespace around comma-separated tasks", () => {
+    writeBase();
+    process.env.LOCAL_LLM_TASKS = " summarize , extract ,explain ";
+    expect(loadConfig().tasks).toEqual(["summarize", "extract", "explain"]);
+  });
+
+  it("rejects an unknown task name in the env list and names the valid ones", () => {
+    writeBase();
+    process.env.LOCAL_LLM_TASKS = "summarize,transpile";
+    expect(() => loadConfig()).toThrow(/unknown task\(s\): transpile/);
+    expect(() => loadConfig()).toThrow(/implement, fix, review, summarize, extract, explain, classify/);
+  });
+
+  it("rejects an unknown task name in config.json", () => {
+    writeBase({ tasks: ["summarize", "transpile"] });
+    expect(() => loadConfig()).toThrow(/tasks/);
+  });
+
+  it("rejects an empty tasks array", () => {
+    writeBase({ tasks: [] });
+    expect(() => loadConfig()).toThrow(/tasks/);
+  });
+
+  it("rejects an env task list that is only separators", () => {
+    writeBase();
+    process.env.LOCAL_LLM_TASKS = " , , ";
+    expect(() => loadConfig()).toThrow(/must list at least one task/);
+  });
+
+  it("rejects an empty tier string", () => {
+    writeBase({ tier: "" });
+    expect(() => loadConfig()).toThrow(/tier/);
+  });
+
+  it("does not warn about the new env vars as unrecognized", () => {
+    writeBase();
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    process.env.LOCAL_LLM_TIER = "coder";
+    process.env.LOCAL_LLM_TASKS = "implement";
+    loadConfig();
+    const output = warn.mock.calls.map((c) => String(c[0])).join("");
+    expect(output).not.toMatch(/LOCAL_LLM_TIER/);
+    expect(output).not.toMatch(/LOCAL_LLM_TASKS/);
+    warn.mockRestore();
   });
 });

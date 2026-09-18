@@ -26,6 +26,8 @@ const baseConfig: Config = {
   debugLogPath: null,
   enableThinking: null,
   toolDescription: null,
+  tier: null,
+  tasks: null,
 };
 
 const ok = (text: string) =>

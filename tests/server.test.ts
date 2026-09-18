@@ -18,6 +18,8 @@ const baseConfig: Config = {
   debugLogPath: null,
   enableThinking: null,
   toolDescription: null,
+  tier: null,
+  tasks: null,
 };
 
 function mockUpstream(content: string, finish_reason: string | null = "stop") {

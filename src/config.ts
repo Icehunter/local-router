@@ -1,6 +1,8 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import { TASKS } from "./prompt.js";
+import type { Task } from "./prompt.js";
 
 const ConfigSchema = z.object({
   baseUrl: z
@@ -43,6 +45,13 @@ const ConfigSchema = z.object({
   // pointed at different backends, this is the only thing that lets the caller
   // tell a 27B coder from a 0.8B summarizer.
   toolDescription: z.string().nullable().default(null),
+  // Descriptive only — gating is driven entirely by `tasks`, so this stays a
+  // free-form string rather than an enum: a third kind of backend should not
+  // require a config migration.
+  tier: z.string().min(1).nullable().default(null),
+  // null = this instance accepts every task. A list makes the published `task`
+  // enum smaller, so a disallowed task is unreachable rather than merely rejected.
+  tasks: z.array(z.enum(TASKS)).nonempty().nullable().default(null),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -62,6 +71,8 @@ interface RawConfig {
   debugLogPath?: unknown;
   enableThinking?: unknown;
   toolDescription?: unknown;
+  tier?: unknown;
+  tasks?: unknown;
 }
 
 type ConfigSource =
@@ -131,6 +142,28 @@ function booleanEnv(name: string): boolean | undefined {
   throw new Error(`${name} must be true or false, got: "${raw}"`);
 }
 
+/**
+ * Comma-separated so a single `.mcp.json` env string can express the list.
+ * An unknown name is a hard error rather than a warning: silently dropping it
+ * would widen the allowlist, which is the failure direction that matters.
+ */
+function taskListEnv(name: string): Task[] | undefined {
+  const raw = envValue(name);
+  if (raw === undefined) return undefined;
+  const parts = raw.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  if (parts.length === 0) {
+    throw new Error(`${name} must list at least one task, got: "${raw}"`);
+  }
+  const unknown = parts.filter((p) => !(TASKS as readonly string[]).includes(p));
+  if (unknown.length > 0) {
+    throw new Error(
+      `${name} contains unknown task(s): ${unknown.join(", ")}. ` +
+        `Valid tasks: ${TASKS.join(", ")}.`,
+    );
+  }
+  return parts as Task[];
+}
+
 const NUMERIC_ENV_VARS: ReadonlyArray<readonly [keyof RawConfig, string]> = [
   ["tokenBudget", "LOCAL_LLM_TOKEN_BUDGET"],
   ["requestTimeoutMs", "LOCAL_LLM_REQUEST_TIMEOUT_MS"],
@@ -195,6 +228,12 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
   const toolDescription = envValue("LOCAL_LLM_TOOL_DESCRIPTION");
   if (toolDescription !== undefined) out.toolDescription = toolDescription;
 
+  const tier = envValue("LOCAL_LLM_TIER");
+  if (tier !== undefined) out.tier = tier;
+
+  const tasks = taskListEnv("LOCAL_LLM_TASKS");
+  if (tasks !== undefined) out.tasks = tasks;
+
   // A blank value here means "explicitly disabled", not "not provided".
   const apiKey = disableableEnv("LOCAL_LLM_API_KEY");
   if (apiKey !== undefined) out.apiKey = apiKey;
@@ -214,6 +253,8 @@ const KNOWN_ENV_VARS = new Set<string>([
   "LOCAL_LLM_DEBUG_LOG_PATH",
   "LOCAL_LLM_ENABLE_THINKING",
   "LOCAL_LLM_TOOL_DESCRIPTION",
+  "LOCAL_LLM_TIER",
+  "LOCAL_LLM_TASKS",
   ...NUMERIC_ENV_VARS.map(([, envVar]) => envVar),
 ]);
 
