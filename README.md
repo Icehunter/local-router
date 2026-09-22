@@ -8,8 +8,8 @@ If you have a local box with a coder model loaded, you can have your primary age
 
 ## Architecture
 
-- **Primary agent**: planning, file reading, integration, review, and deciding what context to send
-- **This plugin's MCP server**: a local Node subprocess with no filesystem access; relays prompts to your upstream LLM over HTTP
+- **Primary agent**: planning, integration, review, and deciding what to delegate
+- **This plugin's MCP server**: a local Node subprocess that relays prompts to your upstream LLM over HTTP. By default it has no filesystem access — the caller assembles context into `prompt`/`context`. When `allowedRoots` is configured (see [Configure](#configure)), it can instead read `files` itself, relative to a caller-supplied `root` that must resolve inside one of the configured roots — so the primary agent never has to spend its own context reading a file it's about to hand off anyway.
 - **Your local server (llama.cpp / LM Studio / Ollama / vLLM)**: handles code generation
 
 The plugin exposes up to two MCP tools:
@@ -129,6 +129,7 @@ Edit `config.json`:
 | `debugLogPath` | no | `null` | When set to a file path, the plugin appends a JSONL entry per call (request + response, bodies truncated at 8KB) to that file. The file is created `0600` because entries contain full prompt bodies. Default `null` disables logging. |
 | `tier` | no | `null` | Free-form label for this instance, e.g. `coder` or `helper`. Appears in the tool description. Does no gating. |
 | `tasks` | no | `null` | Tasks this instance accepts. `null` means all of them. Setting it does three things: the published `task` enum lists only these, so a disallowed task is unreachable; `task` becomes required, because the no-task code-generation default is not one of the listed tasks; and `local_implement` is published only if `implement` or `fix` is on the list. Also settable as `LOCAL_LLM_TASKS=summarize,extract`. |
+| `allowedRoots` | no | `null` | Absolute paths this instance may read files from. `null` (the default) means no filesystem access at all — `files`/`root` are not published in the tool schema, and passing them fails with a clear "not enabled" error. A non-empty list opts in: a call's `root` must realpath-resolve inside one of these entries (symlink escapes are rejected), and `files` are read relative to it — never outside it, even via a symlink. Also settable as `LOCAL_LLM_ALLOWED_ROOTS=/repo/one,/repo/two`. See [File access mode](#file-access-mode). |
 
 ### Environment variable overrides
 
@@ -154,6 +155,7 @@ Configuration resolves in this order, first match wins:
 - `LOCAL_LLM_TOOL_DESCRIPTION`
 - `LOCAL_LLM_TIER`
 - `LOCAL_LLM_TASKS` (comma-separated, e.g. `summarize,extract`)
+- `LOCAL_LLM_ALLOWED_ROOTS` (comma-separated absolute paths, e.g. `/repo/one,/repo/two`)
 
 A variable that is set but blank counts as *not provided*, so resolution falls through
 to `config.json` and then to the default. This is what makes the bundled `.mcp.json`
@@ -335,8 +337,9 @@ It is an ordinary stdio MCP server, so any MCP client can drive it. One required
 }
 ```
 
-The server has no filesystem access — whatever the model needs to see has to be in
-`prompt`. Assembling that context is the calling agent's job.
+By default the server has no filesystem access — whatever the model needs to see has
+to be in `prompt`. Add `root`/`files` to the call instead when the instance has
+`allowedRoots` configured; see [File access mode](#file-access-mode).
 
 ## Fallback behavior
 
@@ -344,11 +347,40 @@ If the upstream server fails (network down, model not loaded, timeout, etc.), Cl
 
 This is a behavioral rule, not enforced by plugin code. Claude follows it because the README documents it.
 
+## File access mode
+
+By default the plugin's MCP server has **no filesystem access** — whatever the model
+needs to see has to be inlined into `prompt`/`context` by the calling agent. Setting
+`allowedRoots` (config.json) or `LOCAL_LLM_ALLOWED_ROOTS` (env) opts an instance into
+reading files itself, which exists to save the calling agent's own context budget: it
+no longer has to Read a file just to paste it into a delegated call.
+
+When enabled, the published tool schema gains two arguments:
+
+- `root` — an absolute path that must realpath-resolve inside one of the configured
+  `allowedRoots` entries. Symlink escapes are rejected: if `root` itself is a symlink
+  pointing outside every allowed root, the call fails.
+- `files` — paths read relative to `root`. Each one is realpath-resolved and checked
+  against `root` the same way; a path that escapes `root` (via `..` traversal or a
+  symlink) is skipped rather than read, with the reason reported back to the caller.
+
+Files are read in the order given and assembled into the prompt sent upstream. If the
+combined content would not fit the instance's `tokenBudget`, the server truncates the
+file at the boundary (keeping its head and tail, dropping the middle) and skips
+whatever comes after — a caller who asked for five files still gets the first four
+whole rather than a single hard rejection naming none of them. Every truncation or
+skip is reported in a `[local-router] NOTE:` line appended to the response, outside
+any `<local_output>` wrapper.
+
+A file over 2MB, a directory, or a path that doesn't resolve to a regular file is
+skipped with a reason rather than read. `root`/`files` are rejected outright — before
+any of that logic runs — on an instance where `allowedRoots` is unset.
+
 ## Security notes
 
-- **Filesystem:** The plugin's MCP server cannot read your files. Claude Code reads files using its own tools, subject to its existing permission prompts.
+- **Filesystem:** No access by default; see [File access mode](#file-access-mode) above. When `allowedRoots` is configured, reads are boundary-checked against it (including symlink resolution) but are **not** subject to Claude Code's own file-tool permission prompts — anything inside an allowed root is readable by any caller of this server. Scope `allowedRoots` to what you're comfortable an agent reading without a per-file prompt.
 - **Network:** Plain HTTP over your LAN by default. If you don't trust your network, put your server behind a reverse proxy with TLS and use `apiKey`.
-- **Secrets in prompts:** If Claude reads a `.env` and includes it in a local model prompt, those secrets cross the LAN. The plugin doesn't filter content; that's on Claude Code's permission flow + your judgement.
+- **Secrets in prompts:** If a `.env` reaches a local model prompt — whether inlined by the caller or read via `files` — those secrets cross the LAN. The plugin doesn't filter content; keep secrets out of any `allowedRoots` directory you don't want the local model to see, or rely on the caller's judgement when it inlines content itself.
 
 ## Concurrency
 

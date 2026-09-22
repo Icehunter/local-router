@@ -88,13 +88,18 @@ it cannot take a whole repo.
 
 ### The loop, when delegation is on
 
-1. **Plan** — read the relevant files yourself, decide the approach, present it briefly.
+1. **Plan** — decide the approach and which files are involved, present it briefly. On
+   an instance with `allowedRoots` configured you do not need to Read those files
+   yourself first — see step 3.
 2. **Compress (optional)** — send bulky logs, test output or long lists through
    `mcp__local-helper__local_direct` first. Keep the raw text and check the summary.
-3. **Delegate writing** — call `mcp__local-coder__local_implement` with the file contents
-   the model needs plus the instruction. Constrain the output: name the files to change,
-   ask for complete replacements or a unified diff, forbid prose and alternatives, and
-   cap the length.
+3. **Delegate writing** — call `mcp__local-coder__local_implement` with the instruction.
+   If the instance has `allowedRoots` configured, pass the file paths in `files` plus an
+   absolute `root` and let the server read them — this is the point of that mode: it
+   keeps the file content out of your own context entirely. Otherwise, read the files
+   yourself and inline their content into `prompt`/`context` as before. Either way,
+   constrain the output: name the files to change, ask for complete replacements or a
+   unified diff, forbid prose and alternatives, and cap the length.
 4. **Review** — check the output against the step-1 requirements, the conventions below,
    and for obvious bugs, missing imports and syntax errors. Use a subagent if one is
    available. Never let the model that wrote the code be the one that approves it.

@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { z } from "zod";
 import { TASKS } from "./prompt.js";
 import type { Task } from "./prompt.js";
@@ -67,6 +67,21 @@ const ConfigSchema = z.object({
     })
     .nullable()
     .default(null),
+  // null (the default) means this instance has no filesystem access — the
+  // caller must inline any file content into `prompt`/`context`, and the
+  // `files`/`root` tool arguments are not published. A non-empty list opts
+  // in: `root` on a call must realpath-resolve inside one of these entries,
+  // and `files` are read relative to it, so a caller-supplied path can never
+  // escape the declared boundary even via a symlink.
+  allowedRoots: z
+    .array(z.string().min(1))
+    .nonempty()
+    .refine((arr) => arr.every((p) => isAbsolute(p)), {
+      error: (issue) =>
+        `allowedRoots entries must be absolute paths; got: ${(issue.input as readonly string[]).filter((p) => !isAbsolute(p)).join(", ")}`,
+    })
+    .nullable()
+    .default(null),
 });
 
 function findDuplicates(values: readonly string[]): string[] {
@@ -98,6 +113,7 @@ interface RawConfig {
   toolDescription?: unknown;
   tier?: unknown;
   tasks?: unknown;
+  allowedRoots?: unknown;
 }
 
 type ConfigSource =
@@ -189,6 +205,21 @@ function taskListEnv(name: string): Task[] | undefined {
   return parts as Task[];
 }
 
+/**
+ * Comma-separated so a single `.mcp.json` env string can express the list.
+ * Unlike taskListEnv, entries aren't checked against a fixed vocabulary here —
+ * the schema's isAbsolute refine catches a malformed path instead.
+ */
+function pathListEnv(name: string): string[] | undefined {
+  const raw = envValue(name);
+  if (raw === undefined) return undefined;
+  const parts = raw.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  if (parts.length === 0) {
+    throw new Error(`${name} must list at least one path, got: "${raw}"`);
+  }
+  return parts;
+}
+
 const NUMERIC_ENV_VARS: ReadonlyArray<readonly [keyof RawConfig, string]> = [
   ["tokenBudget", "LOCAL_LLM_TOKEN_BUDGET"],
   ["requestTimeoutMs", "LOCAL_LLM_REQUEST_TIMEOUT_MS"],
@@ -259,6 +290,9 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
   const tasks = taskListEnv("LOCAL_LLM_TASKS");
   if (tasks !== undefined) out.tasks = tasks;
 
+  const allowedRoots = pathListEnv("LOCAL_LLM_ALLOWED_ROOTS");
+  if (allowedRoots !== undefined) out.allowedRoots = allowedRoots;
+
   // A blank value here means "explicitly disabled", not "not provided".
   const apiKey = disableableEnv("LOCAL_LLM_API_KEY");
   if (apiKey !== undefined) out.apiKey = apiKey;
@@ -280,6 +314,7 @@ const KNOWN_ENV_VARS = new Set<string>([
   "LOCAL_LLM_TOOL_DESCRIPTION",
   "LOCAL_LLM_TIER",
   "LOCAL_LLM_TASKS",
+  "LOCAL_LLM_ALLOWED_ROOTS",
   ...NUMERIC_ENV_VARS.map(([, envVar]) => envVar),
 ]);
 

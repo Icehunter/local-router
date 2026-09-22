@@ -26,6 +26,7 @@ beforeEach(() => {
   delete process.env.LOCAL_LLM_TOOL_DESCRIPTION;
   delete process.env.LOCAL_LLM_TIER;
   delete process.env.LOCAL_LLM_TASKS;
+  delete process.env.LOCAL_LLM_ALLOWED_ROOTS;
 });
 
 afterEach(() => {
@@ -484,6 +485,7 @@ describe("loadConfig — unexpanded ${VAR} placeholders", () => {
     "LOCAL_LLM_TOOL_DESCRIPTION",
     "LOCAL_LLM_TIER",
     "LOCAL_LLM_TASKS",
+    "LOCAL_LLM_ALLOWED_ROOTS",
   ] as const;
 
   for (const v of PLACEHOLDER_VARS) {
@@ -686,6 +688,63 @@ describe("tier and tasks", () => {
     const output = warn.mock.calls.map((c) => String(c[0])).join("");
     expect(output).not.toMatch(/LOCAL_LLM_TIER/);
     expect(output).not.toMatch(/LOCAL_LLM_TASKS/);
+    warn.mockRestore();
+  });
+});
+
+describe("allowedRoots", () => {
+  function writeBase(extra: Record<string, unknown> = {}) {
+    writeFileSync(
+      join(tempDir, "config.json"),
+      JSON.stringify({ baseUrl: "http://1.2.3.4:1234", model: "m", ...extra }),
+    );
+  }
+
+  it("defaults to null, meaning no filesystem access", () => {
+    writeBase();
+    expect(loadConfig().allowedRoots).toBeNull();
+  });
+
+  it("reads allowedRoots from config.json", () => {
+    writeBase({ allowedRoots: ["/repo/one", "/repo/two"] });
+    expect(loadConfig().allowedRoots).toEqual(["/repo/one", "/repo/two"]);
+  });
+
+  it("reads allowedRoots from env, overriding the file", () => {
+    writeBase({ allowedRoots: ["/from/file"] });
+    process.env.LOCAL_LLM_ALLOWED_ROOTS = "/from/env";
+    expect(loadConfig().allowedRoots).toEqual(["/from/env"]);
+  });
+
+  it("parses a comma-separated env list, tolerating whitespace", () => {
+    writeBase();
+    process.env.LOCAL_LLM_ALLOWED_ROOTS = " /repo/one , /repo/two ";
+    expect(loadConfig().allowedRoots).toEqual(["/repo/one", "/repo/two"]);
+  });
+
+  it("rejects a relative path", () => {
+    writeBase({ allowedRoots: ["relative/path"] });
+    expect(() => loadConfig()).toThrow(/absolute/);
+  });
+
+  it("rejects an empty array", () => {
+    writeBase({ allowedRoots: [] });
+    expect(() => loadConfig()).toThrow(/allowedRoots/);
+  });
+
+  it("rejects an env list that is only separators", () => {
+    writeBase();
+    process.env.LOCAL_LLM_ALLOWED_ROOTS = " , , ";
+    expect(() => loadConfig()).toThrow(/must list at least one path/);
+  });
+
+  it("does not warn about LOCAL_LLM_ALLOWED_ROOTS as unrecognized", () => {
+    writeBase();
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    process.env.LOCAL_LLM_ALLOWED_ROOTS = "/repo";
+    loadConfig();
+    const output = warn.mock.calls.map((c) => String(c[0])).join("");
+    expect(output).not.toMatch(/LOCAL_LLM_ALLOWED_ROOTS/);
     warn.mockRestore();
   });
 });

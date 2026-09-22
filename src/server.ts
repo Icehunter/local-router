@@ -13,6 +13,7 @@ import { buildMessages, wrapWithReviewReminder, TASKS, TASK_PROFILES } from "./p
 import type { OutputFormat, Task, TaskProfile, FewShotExample } from "./prompt.js";
 import { callLocalModel } from "./local-client.js";
 import { estimateTokens } from "./tokens.js";
+import { readRequestedFiles, resolveAllowedRoot } from "./fileaccess.js";
 
 const TOOL_IMPLEMENT = "local_implement";
 const TOOL_DIRECT = "local_direct";
@@ -73,13 +74,28 @@ const EXAMPLES_PROPERTY = {
     'Few-shot label examples, sent as alternating user/assistant turns. Required when task is "classify", rejected with any other task.',
 };
 
+const FILES_PROPERTY = {
+  type: "array",
+  items: { type: "string" },
+  description:
+    "Repository paths, relative to `root`, for the server to read itself instead of you inlining their " +
+    "content into `prompt`. Requires `root`. Files that don't fit the token budget are truncated or skipped; " +
+    "the response notes which.",
+};
+
+const ROOT_PROPERTY = {
+  type: "string",
+  description:
+    "Absolute path the `files` entries are read relative to. Must resolve inside this server's configured " +
+    "allowed roots. Required when `files` is set.",
+};
+
 const IMPLEMENT_TOOL_DEFINITION = {
   name: TOOL_IMPLEMENT,
   description:
     "Send a fully-assembled prompt to the configured local model and return its response. " +
-    "Use for code generation. Caller is responsible for assembling file contents and instruction into the prompt string. " +
-    "By default this wraps the output in <local_output> and appends a provider-neutral review reminder. " +
-    "The MCP server has no filesystem access.",
+    "Use for code generation. " +
+    "By default this wraps the output in <local_output> and appends a provider-neutral review reminder.",
 };
 
 const DIRECT_TOOL_DEFINITION = {
@@ -131,6 +147,13 @@ export function buildToolDefinitions(config: Config) {
   if (allowed.some((t) => MAX_LINES_TASKS.includes(t))) {
     properties.max_lines = MAX_LINES_PROPERTY;
   }
+  // Published only when the instance is configured to read files itself: a
+  // disallowed capability becomes unreachable rather than accepted and then
+  // rejected at call time, matching the pattern `tasks` already uses above.
+  if (config.allowedRoots !== null) {
+    properties.files = FILES_PROPERTY;
+    properties.root = ROOT_PROPERTY;
+  }
   // An instance that declares `tasks` has also declared that the no-task default
   // — the code-generation persona — is not one of the things it serves. Marking
   // task required makes that unreachable rather than rejected after the fact.
@@ -145,9 +168,14 @@ export function buildToolDefinitions(config: Config) {
       ? ` Tier: ${config.tier ?? "unspecified"}. Accepts: ${allowed.join(", ")}.`
       : "";
 
+  const fileAccessLine =
+    config.allowedRoots !== null
+      ? " This instance reads files itself: pass repository paths in \"files\" plus an absolute \"root\" instead of inlining their content."
+      : " This instance has no filesystem access — inline any file content the model needs into \"prompt\"/\"context\".";
+
   return definitions.map((tool) => {
     const withRole = withRoleDescription(tool, config.toolDescription);
-    return { ...withRole, description: withRole.description + tierLine, inputSchema };
+    return { ...withRole, description: withRole.description + tierLine + fileAccessLine, inputSchema };
   });
 }
 
@@ -160,13 +188,15 @@ type ToolArgs = {
   task?: unknown;
   examples?: unknown;
   max_lines?: unknown;
+  files?: unknown;
+  root?: unknown;
 };
 
 const OUTPUT_FORMATS: readonly OutputFormat[] = ["code", "diff", "explanation"];
 const MODES = ["delegate", "direct"] as const;
 const KNOWN_ARGS = new Set([
   "prompt", "system", "output_format", "mode", "include_review_reminder",
-  "task", "examples", "max_lines",
+  "task", "examples", "max_lines", "files", "root",
 ]);
 
 const EXAMPLES_REQUIRED =
@@ -236,7 +266,10 @@ export async function handleToolCall(
     // and gets its own "only valid with classify" error — but listing it as valid
     // advice on an instance whose published schema excludes classify is a dead end.
     const examplesUsable = config.tasks === null || config.tasks.includes("classify");
-    const listedArgs = [...KNOWN_ARGS].filter((a) => a !== "examples" || examplesUsable);
+    const filesUsable = config.allowedRoots !== null;
+    const listedArgs = [...KNOWN_ARGS].filter(
+      (a) => (a !== "examples" || examplesUsable) && (a !== "files" && a !== "root" || filesUsable),
+    );
     throw new Error(
       `Unrecognized argument(s): ${unknown.join(", ")}. ` +
         `Valid arguments: ${listedArgs.join(", ")}.`,
@@ -378,7 +411,52 @@ export async function handleToolCall(
     maxTokens: Math.min(profile?.maxTokens ?? config.maxTokens, config.maxTokens),
   };
 
-  const messages = buildMessages({ prompt: args.prompt, system, output_format, task, examples, max_lines });
+  // `files`/`root` let the server read context itself instead of the caller
+  // inlining file content into `prompt` — checked after prompt/task validation
+  // so a caller who also got those wrong sees the more specific complaint,
+  // matching how `max_lines`/`examples` are ordered above.
+  let effectivePrompt = args.prompt;
+  let fileDiagnostics = "";
+  if (args.files !== undefined || args.root !== undefined) {
+    if (!Array.isArray(args.files) || args.files.length === 0) {
+      throw new Error("`files` must be a non-empty array of paths when `root` is provided (and vice versa)");
+    }
+    if (args.files.some((f) => typeof f !== "string")) {
+      throw new Error("`files` entries must all be strings");
+    }
+    const realRoot = resolveAllowedRoot(args.root, config.allowedRoots);
+    // Headroom is measured against the prompt/task/examples assembly the
+    // caller already asked for, so file content only claims what's left —
+    // this is what lets the server "chunk" instead of a single hard reject.
+    const baseMessages = buildMessages({ prompt: args.prompt, system, output_format, task, examples, max_lines });
+    const baseEstimated = estimateTokens(baseMessages.map((m) => m.content).join("\n"));
+    const headroom = effectiveConfig.tokenBudget - effectiveConfig.maxTokens - baseEstimated;
+    if (headroom <= 0) {
+      throw new Error(
+        `No token budget remains for file content: prompt alone is estimated at ${baseEstimated} tokens ` +
+          `against a budget of ${effectiveConfig.tokenBudget} (reserving ${effectiveConfig.maxTokens} for the ` +
+          `response). Shrink the prompt, request fewer files, or raise tokenBudget.`,
+      );
+    }
+    const filesResult = readRequestedFiles(realRoot, args.files, headroom);
+    if (filesResult.included.length === 0 && filesResult.truncated.length === 0) {
+      const reasons = filesResult.skipped.map((s) => `${s.path} (${s.reason})`).join("; ");
+      throw new Error(`None of the requested files could be read: ${reasons}`);
+    }
+    effectivePrompt = `${args.prompt}\n\n${filesResult.text}`;
+    const notes: string[] = [];
+    if (filesResult.truncated.length > 0) {
+      notes.push(`truncated to fit the token budget: ${filesResult.truncated.join(", ")}`);
+    }
+    if (filesResult.skipped.length > 0) {
+      notes.push(`skipped: ${filesResult.skipped.map((s) => `${s.path} (${s.reason})`).join(", ")}`);
+    }
+    if (notes.length > 0) {
+      fileDiagnostics = `\n\n[local-router] NOTE: ${notes.join("; ")}`;
+    }
+  }
+
+  const messages = buildMessages({ prompt: effectivePrompt, system, output_format, task, examples, max_lines });
   const totalText = messages.map((m) => m.content).join("\n");
   const estimated = estimateTokens(totalText);
   if (estimated + effectiveConfig.maxTokens > effectiveConfig.tokenBudget) {
@@ -400,7 +478,7 @@ export async function handleToolCall(
         `(${effectiveConfig.maxTokens}), so the output above is cut off mid-generation. ` +
         `Raise maxTokens or narrow the request before applying it.`
       : body;
-  return { content: [{ type: "text", text }] };
+  return { content: [{ type: "text", text: text + fileDiagnostics }] };
 }
 
 /**

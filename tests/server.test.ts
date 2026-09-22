@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   buildToolDefinitions,
   createServer,
@@ -28,6 +31,7 @@ const baseConfig: Config = {
   toolDescription: null,
   tier: null,
   tasks: null,
+  allowedRoots: null,
 };
 
 function mockUpstream(content: string, finish_reason: string | null = "stop") {
@@ -122,6 +126,103 @@ describe("handleToolCall — token budget", () => {
     await expect(
       handleToolCall("local_direct", { prompt: "small" }, baseConfig),
     ).resolves.toBeDefined();
+  });
+});
+
+describe("handleToolCall — files/root", () => {
+  let projectDir: string;
+
+  beforeEach(() => {
+    projectDir = mkdtempSync(join(tmpdir(), "local-router-server-fa-"));
+  });
+
+  afterEach(() => {
+    rmSync(projectDir, { recursive: true, force: true });
+  });
+
+  it("rejects files/root when allowedRoots is not configured", async () => {
+    writeFileSync(join(projectDir, "a.txt"), "content");
+    await expect(
+      handleToolCall("local_direct", { prompt: "summarize", files: ["a.txt"], root: projectDir }, baseConfig),
+    ).rejects.toThrow(/not enabled/);
+  });
+
+  it("requires root when files is given", async () => {
+    const cfg: Config = { ...baseConfig, allowedRoots: [projectDir] };
+    await expect(
+      handleToolCall("local_direct", { prompt: "summarize", files: ["a.txt"] }, cfg),
+    ).rejects.toThrow(/root.*required/);
+  });
+
+  it("requires files when root is given", async () => {
+    const cfg: Config = { ...baseConfig, allowedRoots: [projectDir] };
+    await expect(
+      handleToolCall("local_direct", { prompt: "summarize", root: projectDir }, cfg),
+    ).rejects.toThrow(/`files` must be a non-empty array/);
+  });
+
+  it("rejects a root outside allowedRoots", async () => {
+    const otherDir = mkdtempSync(join(tmpdir(), "local-router-server-fa-other-"));
+    const cfg: Config = { ...baseConfig, allowedRoots: [otherDir] };
+    try {
+      await expect(
+        handleToolCall("local_direct", { prompt: "summarize", files: ["a.txt"], root: projectDir }, cfg),
+      ).rejects.toThrow(/outside the configured allowedRoots/);
+    } finally {
+      rmSync(otherDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the file itself and sends its content upstream", async () => {
+    writeFileSync(join(projectDir, "notes.txt"), "the important detail");
+    const cfg: Config = { ...baseConfig, allowedRoots: [projectDir] };
+    const fetchSpy = mockUpstream("summary of notes");
+    const res = await handleToolCall(
+      "local_direct",
+      { prompt: "summarize this", task: "summarize", files: ["notes.txt"], root: projectDir },
+      cfg,
+    );
+    expect(res.content[0].text).toContain("summary of notes");
+    const body = JSON.parse(String(fetchSpy.mock.calls[0]![1]!.body));
+    const sentContent = body.messages.map((m: { content: string }) => m.content).join("\n");
+    expect(sentContent).toContain("the important detail");
+    expect(sentContent).toContain("--- file: notes.txt ---");
+  });
+
+  it("notes truncated/skipped files outside the wrapper, after the review reminder", async () => {
+    const lines = Array.from({ length: 500 }, (_, i) => `line-${i}`);
+    writeFileSync(join(projectDir, "big.txt"), lines.join("\n"));
+    writeFileSync(join(projectDir, "missing-sibling.txt"), "x");
+    const cfg: Config = {
+      ...baseConfig,
+      allowedRoots: [projectDir],
+      tokenBudget: 400,
+      maxTokens: 50,
+    };
+    mockUpstream("diff --git a/x b/x");
+    const res = await handleToolCall(
+      "local_implement",
+      { prompt: "implement x", files: ["big.txt", "does-not-exist.txt"], root: projectDir },
+      cfg,
+    );
+    const text = res.content[0].text;
+    expect(text).toContain("[local-router] NOTE:");
+    expect(text.indexOf("</local_output")).toBeLessThan(text.indexOf("[local-router] NOTE:"));
+  });
+
+  it("errors clearly when the prompt alone already fills the budget", async () => {
+    writeFileSync(join(projectDir, "a.txt"), "content");
+    const cfg: Config = { ...baseConfig, allowedRoots: [projectDir], tokenBudget: 20, maxTokens: 15 };
+    await expect(
+      handleToolCall("local_direct", { prompt: "a".repeat(200), files: ["a.txt"], root: projectDir }, cfg),
+    ).rejects.toThrow(/No token budget remains for file content/);
+  });
+
+  it("errors when none of the requested files could be read", async () => {
+    const cfg: Config = { ...baseConfig, allowedRoots: [projectDir] };
+    await expect(
+      handleToolCall("local_direct", { prompt: "summarize", files: ["nope.txt"], root: projectDir }, cfg),
+    ).rejects.toThrow(/None of the requested files could be read/);
   });
 });
 
@@ -919,6 +1020,24 @@ describe("buildToolDefinitions", () => {
     const [, direct] = buildToolDefinitions(baseConfig);
     expect(direct.description).toContain("by default without review wrapping");
     expect(direct.description).not.toContain("return the raw response without review wrapping");
+  });
+
+  it("omits files/root from the schema and appends the no-FS line when allowedRoots is null", () => {
+    const [implement] = buildToolDefinitions(baseConfig);
+    expect(prop(implement, "files")).toBeUndefined();
+    expect(prop(implement, "root")).toBeUndefined();
+    expect(implement.description).toContain("has no filesystem access");
+  });
+
+  it("publishes files/root and appends the FS-enabled line when allowedRoots is set", () => {
+    const cfg: Config = { ...baseConfig, allowedRoots: ["/repo"] };
+    const tools = buildToolDefinitions(cfg);
+    expect(tools.length).toBeGreaterThan(0);
+    for (const tool of tools) {
+      expect(prop(tool, "files")).toBeDefined();
+      expect(prop(tool, "root")).toBeDefined();
+      expect(tool.description).toContain("reads files itself");
+    }
   });
 });
 

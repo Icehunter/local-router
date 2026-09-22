@@ -12,5 +12,6 @@
   "repeatPenalty": 1.1,
   "debugLogPath": null,
   "enableThinking": null,
-  "tier": "coder"
+  "tier": "coder",
+  "allowedRoots": null
 }

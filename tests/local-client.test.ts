@@ -28,6 +28,7 @@ const baseConfig: Config = {
   toolDescription: null,
   tier: null,
   tasks: null,
+  allowedRoots: null,
 };
 
 const ok = (text: string) =>
