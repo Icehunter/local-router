@@ -141,26 +141,21 @@ minutes of blocking on a tier whose calls take 1-20 seconds.
 Every call to `handleToolCall` writes one JSONL line to `<stateDir>/usage.jsonl`
 (`stateDir` defaults to `$CLAUDE_PLUGIN_ROOT/logs` and is gitignored). The line holds
 paths, counts and timings only, never prompt text or model output: timestamp, call id,
-pid, cwd, client, tier, model, tool, task, outcome (`ok`/`rejected`/`error` today; the
-schema also reserves `applied`/`no_change`/`refused` for the apply-mode work below),
+pid, cwd, client, tier, model, tool, task, outcome (`ok`/`rejected`/`error`, plus
+`applied`/`no_change`/`refused` for apply-mode calls),
 prompt/completion bytes, upstream token usage when the backend sends it, and duration.
 A write failure warns once to stderr and never fails the call. Run `npm run usage`
 (or `npm run usage -- --file <path>`) for a per-day, per-tier summary.
 
-## In progress: on-disk apply mode
+## On-disk apply mode
 
-`config.ts` already has `writeRoots` (config key / `LOCAL_LLM_WRITE_ROOTS`) and
-`writesEnabled(config)`, and `src/apply.ts` (atomic multi-file commit with rollback,
-temp-file-then-rename, a `diff`-package unified diff) is implemented and tested on its
-own. The piece that turns a model reply's search/replace edit blocks into the changes
-`apply.ts` commits, `src/editblocks.ts`, could not be created in this session: every
-attempt to write that file was denied by the harness (a security hook first
-false-positived on a regex method name that pattern-matches like a shell call; a
-workaround then tripped the harness's own repeat-attempt guard). `local_implement`
-therefore does not yet accept `targets` and does not write to disk. `apply.ts`'s
-`Change`/`PreparedTarget` shapes are specified to match what `editblocks.ts`'s planner
-is designed to produce, so wiring the two together plus a `targets` branch in
-`server.ts`'s `handleToolCall` is what's left.
+Opt-in via `writeRoots` (config key / `LOCAL_LLM_WRITE_ROOTS`); `writesEnabled(config)`
+gates it, and it needs `allowedRoots` set and an instance serving `implement` or `fix`,
+otherwise `writeRoots` is ignored with a stderr warning. When enabled, `local_implement`
+accepts `targets` (with `root`): `src/editblocks.ts` parses the model reply's
+search/replace blocks and plans the changes, and `src/apply.ts` commits them atomically
+(temp file then rename, rollback on failure) and returns a summary and a unified diff
+instead of code to retype.
 
 ## Fallback behavior (local model errors)
 
