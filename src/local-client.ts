@@ -10,6 +10,8 @@ export interface LocalModelResult {
   content: string;
   /** Upstream `finish_reason`; "length" means the generation hit max_tokens. */
   finishReason: string | null;
+  /** Upstream `usage` (prompt_tokens/completion_tokens), when the backend sends it; null otherwise. */
+  usage: { promptTokens: number; completionTokens: number } | null;
 }
 
 function truncate(text: string): string {
@@ -209,9 +211,18 @@ async function callLocalModelInner(
           `The model produced no output; retry or reduce the prompt.`,
       );
     }
+    const rawUsage = (json as { usage?: unknown }).usage;
+    let usage: { promptTokens: number; completionTokens: number } | null = null;
+    if (rawUsage !== null && typeof rawUsage === "object") {
+      const u = rawUsage as { prompt_tokens?: unknown; completion_tokens?: unknown };
+      if (typeof u.prompt_tokens === "number" && typeof u.completion_tokens === "number") {
+        usage = { promptTokens: u.prompt_tokens, completionTokens: u.completion_tokens };
+      }
+    }
     return {
       content,
       finishReason: typeof choice?.finish_reason === "string" ? choice.finish_reason : null,
+      usage,
     };
   } finally {
     clearTimeout(timeout);

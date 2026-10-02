@@ -68,7 +68,7 @@ const ConfigSchema = z.object({
     .nullable()
     .default(null),
   // null (the default) means this instance has no filesystem access — the
-  // caller must inline any file content into `prompt`/`context`, and the
+  // caller must inline any file content into `prompt`, and the
   // `files`/`root` tool arguments are not published. A non-empty list opts
   // in: `root` on a call must realpath-resolve inside one of these entries,
   // and `files` are read relative to it, so a caller-supplied path can never
@@ -79,6 +79,23 @@ const ConfigSchema = z.object({
     .refine((arr) => arr.every((p) => isAbsolute(p)), {
       error: (issue) =>
         `allowedRoots entries must be absolute paths; got: ${(issue.input as readonly string[]).filter((p) => !isAbsolute(p)).join(", ")}`,
+    })
+    .nullable()
+    .default(null),
+  writeRoots: z
+    .array(z.string().min(1))
+    .nonempty()
+    .refine((arr) => arr.every((p) => isAbsolute(p)), {
+      error: (issue) =>
+        `writeRoots entries must be absolute paths; got: ${(issue.input as readonly string[]).filter((p) => !isAbsolute(p)).join(", ")}`,
+    })
+    .nullable()
+    .default(null),
+  stateDir: z
+    .string()
+    .min(1)
+    .refine((v) => isAbsolute(v), {
+      error: (issue) => `stateDir must be an absolute path; got: ${issue.input as string}`,
     })
     .nullable()
     .default(null),
@@ -114,6 +131,8 @@ interface RawConfig {
   tier?: unknown;
   tasks?: unknown;
   allowedRoots?: unknown;
+  writeRoots?: unknown;
+  stateDir?: unknown;
 }
 
 type ConfigSource =
@@ -293,6 +312,12 @@ function applyEnvOverrides(raw: RawConfig): RawConfig {
   const allowedRoots = pathListEnv("LOCAL_LLM_ALLOWED_ROOTS");
   if (allowedRoots !== undefined) out.allowedRoots = allowedRoots;
 
+  const writeRoots = pathListEnv("LOCAL_LLM_WRITE_ROOTS");
+  if (writeRoots !== undefined) out.writeRoots = writeRoots;
+
+  const stateDir = disableableEnv("LOCAL_LLM_STATE_DIR");
+  if (stateDir !== undefined) out.stateDir = stateDir;
+
   // A blank value here means "explicitly disabled", not "not provided".
   const apiKey = disableableEnv("LOCAL_LLM_API_KEY");
   if (apiKey !== undefined) out.apiKey = apiKey;
@@ -315,6 +340,8 @@ const KNOWN_ENV_VARS = new Set<string>([
   "LOCAL_LLM_TIER",
   "LOCAL_LLM_TASKS",
   "LOCAL_LLM_ALLOWED_ROOTS",
+  "LOCAL_LLM_WRITE_ROOTS",
+  "LOCAL_LLM_STATE_DIR",
   ...NUMERIC_ENV_VARS.map(([, envVar]) => envVar),
 ]);
 
@@ -362,6 +389,12 @@ function describeSource(source: ConfigSource): string {
 
 export function loadConfig(): Config {
   const { raw, source } = readConfigFile();
+  if (raw.stateDir === undefined) {
+    const root = process.env.CLAUDE_PLUGIN_ROOT;
+    if (typeof root === "string" && root !== "") {
+      raw.stateDir = join(root, "logs");
+    }
+  }
   warnUnknownKeys(raw, source);
   warnUnknownEnvVars();
   const result = ConfigSchema.safeParse(applyEnvOverrides(raw));
@@ -389,5 +422,30 @@ export function loadConfig(): Config {
         `${describeSource(source)}`,
     );
   }
+  if (config.writeRoots !== null) {
+    const effectiveTasks = config.tasks ?? TASKS;
+    if (!effectiveTasks.includes("implement") && !effectiveTasks.includes("fix")) {
+      process.stderr.write(
+        `[local-router] writeRoots ignored: this instance serves no implement or fix task\n`,
+      );
+    }
+    if (config.allowedRoots === null) {
+      process.stderr.write(
+        `[local-router] writeRoots ignored: allowedRoots is not set, so there is no read scope to validate root against\n`,
+      );
+    }
+  }
   return config;
+}
+
+/**
+ * Writes are only ever possible when writeRoots and allowedRoots are both set AND
+ * this instance's effective task list includes implement or fix — the check
+ * loadConfig's warning above also uses, kept here so every call site re-checks it
+ * rather than trusting a value cached at startup.
+ */
+export function writesEnabled(config: Config): boolean {
+  if (config.writeRoots === null || config.allowedRoots === null) return false;
+  const effectiveTasks = config.tasks ?? TASKS;
+  return effectiveTasks.includes("implement") || effectiveTasks.includes("fix");
 }

@@ -29,6 +29,8 @@ const baseConfig: Config = {
   tier: null,
   tasks: null,
   allowedRoots: null,
+  writeRoots: null,
+  stateDir: null,
 };
 
 const ok = (text: string) =>
@@ -308,6 +310,36 @@ describe("callLocalModel — response validation", () => {
     );
     expect((await callLocalModel([{ role: "user", content: "x" }], baseConfig)).finishReason)
       .toBeNull();
+  });
+
+  it("parses usage when upstream sends prompt_tokens/completion_tokens", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json200({
+        choices: [{ message: { content: "done" } }],
+        usage: { prompt_tokens: 123, completion_tokens: 45 },
+      }),
+    );
+    const result = await callLocalModel([{ role: "user", content: "x" }], baseConfig);
+    expect(result.usage).toEqual({ promptTokens: 123, completionTokens: 45 });
+  });
+
+  it("reports usage null when upstream omits it", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json200({ choices: [{ message: { content: "done" } }] }),
+    );
+    const result = await callLocalModel([{ role: "user", content: "x" }], baseConfig);
+    expect(result.usage).toBeNull();
+  });
+
+  it("reports usage null when upstream sends a malformed usage object", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      json200({
+        choices: [{ message: { content: "done" } }],
+        usage: { prompt_tokens: "not-a-number" },
+      }),
+    );
+    const result = await callLocalModel([{ role: "user", content: "x" }], baseConfig);
+    expect(result.usage).toBeNull();
   });
 
   it("truncates the debug log on a codepoint boundary, not mid-sequence", async () => {

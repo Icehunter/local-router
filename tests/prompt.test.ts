@@ -2,10 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
   buildMessages,
   DEFAULT_SYSTEM_PROMPT,
+  NO_TOOLS_GUARD,
   REVIEW_REMINDER,
   wrapWithReviewReminder,
   TASKS,
   TASK_PROFILES,
+  WRITABLE_TEXT_REMINDER,
+  wrapUntrusted,
+  buildApplyDirective,
+  EDIT_BLOCK_DIRECTIVE,
 } from "../src/prompt.js";
 
 describe("buildMessages", () => {
@@ -13,7 +18,7 @@ describe("buildMessages", () => {
     const messages = buildMessages({ prompt: "write hello" });
     expect(messages[0]).toEqual({
       role: "system",
-      content: DEFAULT_SYSTEM_PROMPT,
+      content: DEFAULT_SYSTEM_PROMPT + NO_TOOLS_GUARD,
     });
   });
 
@@ -29,9 +34,10 @@ describe("buildMessages", () => {
     expect(user).toContain("Return only code");
   });
 
-  it("appends 'diff' format directive when output_format='diff'", () => {
+  it("appends search/replace edit directive when output_format='diff'", () => {
     const messages = buildMessages({ prompt: "fix bug", output_format: "diff" });
-    expect(messages[1].content).toContain("Return a unified diff");
+    expect(messages[1].content).toContain("=== EDIT: <path> ===");
+    expect(messages[1].content).toContain("<<<<<<< SEARCH");
   });
 
   it("appends 'explanation' format directive when output_format='explanation'", () => {
@@ -173,7 +179,7 @@ describe("task profiles", () => {
 describe("buildMessages with a task", () => {
   it("uses the profile system prompt", () => {
     const m = buildMessages({ prompt: "x", task: "summarize" });
-    expect(m[0].content).toBe(TASK_PROFILES.summarize.system);
+    expect(m[0].content).toBe(TASK_PROFILES.summarize.system + NO_TOOLS_GUARD);
   });
 
   it("uses the profile directive", () => {
@@ -189,14 +195,38 @@ describe("buildMessages with a task", () => {
   it("explicit output_format beats the profile directive", () => {
     const m = buildMessages({ prompt: "x", task: "review", output_format: "diff" });
     const user = m[m.length - 1].content;
-    expect(user).toContain("Return a unified diff");
+    expect(user).toContain("<<<<<<< SEARCH");
     expect(user).not.toContain(TASK_PROFILES.review.directive);
+  });
+
+  it("task 'fix' asks for edit blocks without the caller passing output_format", () => {
+    const m = buildMessages({ prompt: "make the test pass", task: "fix" });
+    const user = m[m.length - 1].content;
+    expect(user).toContain("=== EDIT: <path> ===");
+    expect(user).toContain("<<<<<<< SEARCH");
+    expect(user).not.toContain("complete enough to replace what you were shown");
+  });
+
+  it("task 'implement' still returns whole code, not edit blocks", () => {
+    const m = buildMessages({ prompt: "write a parser", task: "implement" });
+    expect(m[m.length - 1].content).not.toContain("<<<<<<< SEARCH");
+  });
+
+  it("every system prompt states that no tools are available", () => {
+    for (const task of ["implement", "fix", "review", "explain"] as const) {
+      const m = buildMessages({ prompt: "x", task });
+      expect(m[0].content).toMatch(/NO tools/i);
+    }
+    // default (no task) is guarded too
+    expect(buildMessages({ prompt: "x" })[0].content).toMatch(/NO tools/i);
+    // but an explicit override is still used verbatim
+    expect(buildMessages({ prompt: "x", system: "be terse" })[0].content).toBe("be terse");
   });
 
   it("with no task, output is byte-identical to the legacy two-message form", () => {
     const m = buildMessages({ prompt: "write hello" });
     expect(m).toHaveLength(2);
-    expect(m[0]).toEqual({ role: "system", content: DEFAULT_SYSTEM_PROMPT });
+    expect(m[0]).toEqual({ role: "system", content: DEFAULT_SYSTEM_PROMPT + NO_TOOLS_GUARD });
     expect(m[1].content).toBe(
       "write hello\n\n---\n\nReturn only code. No prose, no fences unless syntactically required by the language.",
     );
@@ -313,5 +343,109 @@ describe("max_lines", () => {
     expect(m[1].content).toBe(
       "write hello\n\n---\n\nReturn only code. No prose, no fences unless syntactically required by the language.",
     );
+  });
+});
+
+describe("wrapUntrusted", () => {
+  it("wraps body in a tag with a matching 16-hex id on both ends", () => {
+    const result = wrapUntrusted("mytag", "hello");
+    expect(result.wrapped).toMatch(/^<mytag id="[0-9a-f]{16}">\nhello\n<\/mytag id="[0-9a-f]{16}">$/);
+    const m = result.wrapped.match(/id="([0-9a-f]{16})"/);
+    expect(m).not.toBeNull();
+    expect(m![1]).toBe(result.id);
+  });
+
+  it("returns a different id on each call", () => {
+    const a = wrapUntrusted("mytag", "hello");
+    const b = wrapUntrusted("mytag", "hello");
+    expect(a.id).not.toBe(b.id);
+  });
+
+  it("still embeds the body verbatim even if the body contains a plausible id substring", () => {
+    const body = `prefix 0123456789abcdef suffix`;
+    const result = wrapUntrusted("mytag", body);
+    expect(result.wrapped.includes(body)).toBe(true);
+  });
+});
+
+describe("WRITABLE_TEXT_REMINDER", () => {
+  it("is a non-empty string mentioning `targets` and local_implement", () => {
+    expect(typeof WRITABLE_TEXT_REMINDER).toBe("string");
+    expect(WRITABLE_TEXT_REMINDER.length).toBeGreaterThan(0);
+    expect(WRITABLE_TEXT_REMINDER).toContain("`targets`");
+    expect(WRITABLE_TEXT_REMINDER).toContain("local_implement");
+  });
+
+  it("mentions untrusted", () => {
+    expect(WRITABLE_TEXT_REMINDER.toLowerCase()).toContain("untrusted");
+  });
+});
+
+describe("buildApplyDirective", () => {
+  it("contains EDIT_BLOCK_DIRECTIVE verbatim for existing-only targets", () => {
+    const out = buildApplyDirective([{ rel: "a.ts", exists: true }]);
+    expect(out).toContain(EDIT_BLOCK_DIRECTIVE);
+  });
+
+  it("lists the target file names", () => {
+    const out = buildApplyDirective([
+      { rel: "a.ts", exists: true },
+      { rel: "b.ts", exists: true },
+    ]);
+    expect(out).toContain("a.ts");
+    expect(out).toContain("b.ts");
+  });
+
+  it("includes the NEED rule", () => {
+    const out = buildApplyDirective([{ rel: "a.ts", exists: true }]);
+    expect(out).toContain("NEED:");
+  });
+
+  it("only mentions the FILE block format when at least one target is new", () => {
+    const existingOnly = buildApplyDirective([{ rel: "a.ts", exists: true }]);
+    expect(existingOnly).not.toContain("=== FILE:");
+
+    const withNew = buildApplyDirective([{ rel: "new.ts", exists: false }]);
+    expect(withNew).toContain("=== FILE:");
+    expect(withNew).toContain("new.ts");
+  });
+
+  it("handles a mix of existing and new targets", () => {
+    const out = buildApplyDirective([
+      { rel: "old.ts", exists: true },
+      { rel: "new.ts", exists: false },
+    ]);
+    expect(out).toContain("old.ts");
+    expect(out).toContain("new.ts");
+    expect(out).toContain("=== FILE:");
+  });
+});
+
+describe("buildMessages directive override", () => {
+  it("beats output_format", () => {
+    const messages = buildMessages({ prompt: "x", output_format: "diff", directive: "CUSTOM DIRECTIVE" });
+    const last = messages[messages.length - 1];
+    expect(last.content).toContain("CUSTOM DIRECTIVE");
+    expect(last.content).not.toContain("<<<<<<< SEARCH");
+  });
+
+  it("beats the task profile's own directive", () => {
+    const messages = buildMessages({ prompt: "x", task: "fix", directive: "CUSTOM DIRECTIVE" });
+    const last = messages[messages.length - 1];
+    expect(last.content).toContain("CUSTOM DIRECTIVE");
+    expect(last.content).not.toContain("<<<<<<< SEARCH");
+  });
+
+  it("does not affect the system message", () => {
+    const messages = buildMessages({ prompt: "x", task: "review", directive: "CUSTOM DIRECTIVE" });
+    const first = messages[0];
+    expect(first.role).toBe("system");
+    expect(first.content).toBe(TASK_PROFILES.review.system + NO_TOOLS_GUARD);
+  });
+
+  it("leaves behavior unchanged when no directive is given", () => {
+    const messages = buildMessages({ prompt: "x", task: "summarize" });
+    const last = messages[messages.length - 1];
+    expect(last.content).toContain(TASK_PROFILES.summarize.directive);
   });
 });

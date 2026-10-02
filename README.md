@@ -9,7 +9,7 @@ If you have a local box with a coder model loaded, you can have your primary age
 ## Architecture
 
 - **Primary agent**: planning, integration, review, and deciding what to delegate
-- **This plugin's MCP server**: a local Node subprocess that relays prompts to your upstream LLM over HTTP. By default it has no filesystem access — the caller assembles context into `prompt`/`context`. When `allowedRoots` is configured (see [Configure](#configure)), it can instead read `files` itself, relative to a caller-supplied `root` that must resolve inside one of the configured roots — so the primary agent never has to spend its own context reading a file it's about to hand off anyway.
+- **This plugin's MCP server**: a local Node subprocess that relays prompts to your upstream LLM over HTTP. By default it has no filesystem access — the caller assembles context into `prompt` (there is no separate `context` argument). When `allowedRoots` is configured (see [Configure](#configure)), it can instead read `files` itself, relative to a caller-supplied `root` that must resolve inside one of the configured roots — so the primary agent never has to spend its own context reading a file it's about to hand off anyway.
 - **Your local server (llama.cpp / LM Studio / Ollama / vLLM)**: handles code generation
 
 The plugin exposes up to two MCP tools:
@@ -117,7 +117,7 @@ Edit `config.json`:
 | `baseUrl` | yes | — | Your server's host. The plugin appends `/v1/chat/completions`; a trailing `/` or `/v1` is stripped first, so `http://host:1234` and `http://host:1234/v1` both work. |
 | `model` | yes | — | Model name (or alias) as your server reports it. |
 | `apiKey` | no | `null` | Bearer token if your server is behind auth. |
-| `tokenBudget` | no | `180000` | Max prompt size before the tool errors. Leaves headroom for response inside a 200K context. |
+| `tokenBudget` | no | `180000` | Max prompt size before the tool errors. Leaves headroom for response inside a 200K context. Prompt size is estimated with `ceil(utf8 bytes / 3)`, a conservative floor measured 2026-09-26 against a real tokenizer across GLSL, TOML, TypeScript, Markdown and Java (3.11 to 4.14 bytes per token); size your budget assuming the real token count could run close to your estimate, not comfortably under it. |
 | `requestTimeoutMs` | no | `300000` | 5 min. Local generation can be slow. |
 | `maxTokens` | no | `16000` | Max tokens the model may generate per response. Most servers cap higher than this; raise if you need long completions. |
 | `temperature` | no | `0.7` | Sampling temperature. Lower = more deterministic but can amplify repetition loops without `repeatPenalty`. |
@@ -130,6 +130,8 @@ Edit `config.json`:
 | `tier` | no | `null` | Free-form label for this instance, e.g. `coder` or `helper`. Appears in the tool description. Does no gating. |
 | `tasks` | no | `null` | Tasks this instance accepts. `null` means all of them. Setting it does three things: the published `task` enum lists only these, so a disallowed task is unreachable; `task` becomes required, because the no-task code-generation default is not one of the listed tasks; and `local_implement` is published only if `implement` or `fix` is on the list. Also settable as `LOCAL_LLM_TASKS=summarize,extract`. |
 | `allowedRoots` | no | `null` | Absolute paths this instance may read files from. `null` (the default) means no filesystem access at all — `files`/`root` are not published in the tool schema, and passing them fails with a clear "not enabled" error. A non-empty list opts in: a call's `root` must realpath-resolve inside one of these entries (symlink escapes are rejected), and `files` are read relative to it — never outside it, even via a symlink. Also settable as `LOCAL_LLM_ALLOWED_ROOTS=/repo/one,/repo/two`. See [File access mode](#file-access-mode). |
+| `writeRoots` | no | `null` | Absolute paths this instance may write to, a stricter sub-scope of `allowedRoots`. Also settable as `LOCAL_LLM_WRITE_ROOTS=/repo/one`. Present and validated today (`writesEnabled(config)` in `src/config.ts`, plus the atomic multi-file writer in `src/apply.ts`), but nothing in the published tool schema uses it yet — the search/replace parser that would turn a model reply into the changes `apply.ts` commits is not built yet. Setting it currently has no effect on what a call can do. |
+| `stateDir` | no | `$CLAUDE_PLUGIN_ROOT/logs` | Absolute path for the usage ledger (`usage.jsonl`, see [Usage ledger](#usage-ledger)). Also settable as `LOCAL_LLM_STATE_DIR=/path`; a blank value disables the ledger. |
 
 ### Environment variable overrides
 
@@ -156,6 +158,8 @@ Configuration resolves in this order, first match wins:
 - `LOCAL_LLM_TIER`
 - `LOCAL_LLM_TASKS` (comma-separated, e.g. `summarize,extract`)
 - `LOCAL_LLM_ALLOWED_ROOTS` (comma-separated absolute paths, e.g. `/repo/one,/repo/two`)
+- `LOCAL_LLM_WRITE_ROOTS` (comma-separated absolute paths; see the `writeRoots` row above)
+- `LOCAL_LLM_STATE_DIR` (absolute path; blank disables the usage ledger)
 
 A variable that is set but blank counts as *not provided*, so resolution falls through
 to `config.json` and then to the default. This is what makes the bundled `.mcp.json`
@@ -350,7 +354,8 @@ This is a behavioral rule, not enforced by plugin code. Claude follows it becaus
 ## File access mode
 
 By default the plugin's MCP server has **no filesystem access** — whatever the model
-needs to see has to be inlined into `prompt`/`context` by the calling agent. Setting
+needs to see has to be inlined into `prompt` by the calling agent (there is no separate
+`context` argument). Setting
 `allowedRoots` (config.json) or `LOCAL_LLM_ALLOWED_ROOTS` (env) opts an instance into
 reading files itself, which exists to save the calling agent's own context budget: it
 no longer has to Read a file just to paste it into a delegated call.
@@ -375,6 +380,20 @@ any `<local_output>` wrapper.
 A file over 2MB, a directory, or a path that doesn't resolve to a regular file is
 skipped with a reason rather than read. `root`/`files` are rejected outright — before
 any of that logic runs — on an instance where `allowedRoots` is unset.
+
+## Usage ledger
+
+Every call writes exactly one JSONL line to `<stateDir>/usage.jsonl` (default
+`$CLAUDE_PLUGIN_ROOT/logs/usage.jsonl`, gitignored; see the `stateDir` config row
+above). The line records paths, counts and timings only — never the prompt text, file
+content, or the model's output: timestamp, a call id, pid, cwd, client name, `tier`,
+`model`, which tool, `task`, an outcome (`ok`, `rejected` for a call that never reached
+the upstream model, or `error` for one that did but failed), prompt/completion bytes,
+the upstream token usage when the backend reports it, and how long the call took. A
+write failure warns once to stderr and never fails the call itself.
+
+Run `npm run usage` for a per-day, per-tier summary table, or `npm run usage -- --file
+<path>` to point it at a different log.
 
 ## Security notes
 

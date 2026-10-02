@@ -7,13 +7,18 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { loadConfig } from "./config.js";
+import { loadConfig, writesEnabled } from "./config.js";
 import type { Config } from "./config.js";
-import { buildMessages, wrapWithReviewReminder, TASKS, TASK_PROFILES } from "./prompt.js";
-import type { OutputFormat, Task, TaskProfile, FewShotExample } from "./prompt.js";
+import { buildMessages, wrapWithReviewReminder, TASKS, TASK_PROFILES, buildApplyDirective, WRITABLE_TEXT_REMINDER } from "./prompt.js";
+import type { OutputFormat, Task, TaskProfile, FewShotExample, ApplyTargetInfo } from "./prompt.js";
 import { callLocalModel } from "./local-client.js";
+import type { LocalModelResult } from "./local-client.js";
 import { estimateTokens } from "./tokens.js";
 import { readRequestedFiles, resolveAllowedRoot } from "./fileaccess.js";
+import { newCallId, appendUsage } from "./ledger.js";
+import type { UsageEntry, UsageFileWritten } from "./ledger.js";
+import { prepareTargets, commitChanges, buildDiff } from "./apply.js";
+import { parseEditReply, planEdits } from "./editblocks.js";
 
 const TOOL_IMPLEMENT = "local_implement";
 const TOOL_DIRECT = "local_direct";
@@ -22,7 +27,10 @@ const BASE_TOOL_PROPERTIES = {
   prompt: {
     type: "string",
     description:
-      "Complete user-message text to send. Include any file contents, instructions, and running context here.",
+      "Complete user-message text to send: the requirement, constraints and conventions to follow. " +
+      "There is no separate \"context\" argument, this is the only free-text field. " +
+      "On an instance with filesystem access (see the tool description), name files in `files` " +
+      "instead of pasting their contents.",
   },
   system: {
     type: "string",
@@ -48,15 +56,25 @@ const BASE_TOOL_PROPERTIES = {
   },
 };
 
-const MAX_LINES_TASKS: readonly Task[] = TASKS.filter((t) => TASK_PROFILES[t].acceptsMaxLines);
+function maxLinesTasksFor(allowed: readonly Task[]): readonly Task[] {
+  return TASKS.filter((t) => allowed.includes(t) && TASK_PROFILES[t].acceptsMaxLines);
+}
 
-const MAX_LINES_PROPERTY = {
-  type: "integer",
-  minimum: 1,
-  description:
-    `Caps the number of output lines. Valid only with task ${MAX_LINES_TASKS.map((t) => `"${t}"`).join(", ")}. ` +
-    "Omitting it uses the task's own default line cap where one exists (summarize defaults to 10).",
-};
+function buildMaxLinesProperty(allowed: readonly Task[]) {
+  const tasks = maxLinesTasksFor(allowed);
+  const defaultsList = tasks
+    .filter((t) => TASK_PROFILES[t].defaultMaxLines !== undefined)
+    .map((t) => `"${t}" defaults to ${TASK_PROFILES[t].defaultMaxLines}`)
+    .join(", ");
+  const trailing = defaultsList.length > 0 ? ` (${defaultsList}).` : ".";
+  return {
+    type: "integer",
+    minimum: 1,
+    description:
+      `Caps the number of output lines. Valid only with task ${tasks.map((t) => `"${t}"`).join(", ")}. ` +
+      `Omitting it uses the task's own default line cap where one exists` + trailing,
+  };
+}
 
 const EXAMPLES_PROPERTY = {
   type: "array",
@@ -90,6 +108,19 @@ const ROOT_PROPERTY = {
     "allowed roots. Required when `files` is set.",
 };
 
+const TARGETS_PROPERTY = {
+  type: "array",
+  items: { type: "string" },
+  minItems: 1,
+  maxItems: 20,
+  description:
+    "Repository paths, relative to `root`, that the server may write to. When set, the model's reply is " +
+    "parsed as search/replace edit blocks (or a whole-file block for a path that does not exist yet) and " +
+    "applied to disk directly: the response is a summary and a diff, not code to retype. Requires `root` " +
+    "and task \"implement\" or \"fix\". Do not copy code out of a text-mode response by hand when this " +
+    "argument is available, call again with `targets` instead.",
+};
+
 const IMPLEMENT_TOOL_DEFINITION = {
   name: TOOL_IMPLEMENT,
   description:
@@ -102,28 +133,14 @@ const DIRECT_TOOL_DEFINITION = {
   name: TOOL_DIRECT,
   description:
     "Send a prompt to the configured local model and return its response, by default without review wrapping. " +
-    "A task whose profile wraps — implement and fix — still wraps unless you override it with `mode` or `include_review_reminder`. " +
+    "A task whose profile wraps (implement and fix) still wraps unless you override it with `mode` or `include_review_reminder`. " +
     "Use for direct local mode, explanations, and rate-limit escape-hatch queries.",
 };
 
-/**
- * The two tools differ in exactly one thing: which way `shouldWrapOutput` falls
- * when the caller names no task. Once a task is named the profile's `wrap` wins,
- * so on an instance where no accepted task wraps, the tools are identical for
- * every call that names one — and the only behaviour `local_implement` still
- * selects is the no-task default, which is the code-generation persona. That is
- * the wrong default on a tier serving no code task, so the tool is not published
- * at all rather than published as a trap.
- */
 export function servesImplementTool(config: Config): boolean {
   return (config.tasks ?? TASKS).some((t) => TASK_PROFILES[t].wrap);
 }
 
-/**
- * Built per-config rather than as a constant so the published `task` enum lists
- * only what this instance serves: a disallowed task becomes unreachable instead
- * of being rejected after the caller has already committed to the call.
- */
 export function buildToolDefinitions(config: Config) {
   const allowed: readonly Task[] = config.tasks ?? TASKS;
   const definitions = servesImplementTool(config)
@@ -144,24 +161,14 @@ export function buildToolDefinitions(config: Config) {
   if (allowed.includes("classify")) {
     properties.examples = EXAMPLES_PROPERTY;
   }
-  if (allowed.some((t) => MAX_LINES_TASKS.includes(t))) {
-    properties.max_lines = MAX_LINES_PROPERTY;
+  const maxLinesTasks = maxLinesTasksFor(allowed);
+  if (maxLinesTasks.length > 0) {
+    properties.max_lines = buildMaxLinesProperty(allowed);
   }
-  // Published only when the instance is configured to read files itself: a
-  // disallowed capability becomes unreachable rather than accepted and then
-  // rejected at call time, matching the pattern `tasks` already uses above.
   if (config.allowedRoots !== null) {
     properties.files = FILES_PROPERTY;
     properties.root = ROOT_PROPERTY;
   }
-  // An instance that declares `tasks` has also declared that the no-task default
-  // — the code-generation persona — is not one of the things it serves. Marking
-  // task required makes that unreachable rather than rejected after the fact.
-  const inputSchema = {
-    type: "object",
-    properties,
-    required: config.tasks !== null ? ["prompt", "task"] : ["prompt"],
-  };
 
   const tierLine =
     config.tier !== null || config.tasks !== null
@@ -171,11 +178,30 @@ export function buildToolDefinitions(config: Config) {
   const fileAccessLine =
     config.allowedRoots !== null
       ? " This instance reads files itself: pass repository paths in \"files\" plus an absolute \"root\" instead of inlining their content."
-      : " This instance has no filesystem access — inline any file content the model needs into \"prompt\"/\"context\".";
+      : " This instance has no filesystem access, inline any file content the model needs into \"prompt\".";
+
+  const writeAccessLine = writesEnabled(config)
+    ? " This instance can also write: pass \"targets\" (with \"root\") on local_implement and the server applies the model's edit blocks directly, no retyping."
+    : "";
+
+  const promptBudgetTokens = config.tokenBudget - config.maxTokens;
+  const promptBudgetKb = Math.floor((promptBudgetTokens * 3) / 1024);
+  const budgetLine =
+    ` Input budget per call: about ${promptBudgetTokens} tokens (roughly ${promptBudgetKb} KB of code) for the ` +
+    `prompt and every file together; the reply can use up to ${config.maxTokens} tokens.`;
 
   return definitions.map((tool) => {
     const withRole = withRoleDescription(tool, config.toolDescription);
-    return { ...withRole, description: withRole.description + tierLine + fileAccessLine, inputSchema };
+    let description = withRole.description + tierLine + fileAccessLine + budgetLine;
+    if (withRole.name === TOOL_IMPLEMENT && writesEnabled(config)) {
+      description += writeAccessLine;
+    }
+    const toolProperties: Record<string, unknown> = { ...properties };
+    if (withRole.name === TOOL_IMPLEMENT && writesEnabled(config)) {
+      toolProperties.targets = TARGETS_PROPERTY;
+      toolProperties.root = ROOT_PROPERTY;
+    }
+    return { ...withRole, description, inputSchema: { type: "object", properties: toolProperties, required: config.tasks !== null ? ["prompt", "task"] : ["prompt"] } };
   });
 }
 
@@ -190,31 +216,27 @@ type ToolArgs = {
   max_lines?: unknown;
   files?: unknown;
   root?: unknown;
+  targets?: unknown;
 };
 
 const OUTPUT_FORMATS: readonly OutputFormat[] = ["code", "diff", "explanation"];
 const MODES = ["delegate", "direct"] as const;
 const KNOWN_ARGS = new Set([
   "prompt", "system", "output_format", "mode", "include_review_reminder",
-  "task", "examples", "max_lines", "files", "root",
+  "task", "examples", "max_lines", "files", "root", "targets",
 ]);
 
 const EXAMPLES_REQUIRED =
   '`examples` is required when task is "classify" and must contain at least 2 entries. ' +
   "Without examples this model returns the same label for every input.";
 
-// 3000 examples was accepted before this cap and produced a 6002-message request:
-// the token-budget check counts content bytes, not per-message chat-template
-// overhead, so many tiny examples slip past it.
 const MAX_EXAMPLES = 50;
 
-/** Keeps a hostile or accidental multi-KB argument out of the error response. */
 function short(value: unknown): string {
   const s = JSON.stringify(value) ?? String(value);
   return s.length > 120 ? s.slice(0, 120) + '…"' : s;
 }
 
-/** Suffixes a tool's description so callers can distinguish two instances. */
 export function withRoleDescription<T extends { description: string }>(
   tool: T,
   roleDescription: string | null,
@@ -237,17 +259,20 @@ export function shouldWrapOutput(
   return toolName === TOOL_IMPLEMENT;
 }
 
-export async function handleToolCall(
+async function runToolCall(
   toolName: string,
   rawArgs: unknown,
   config: Config,
   signal?: AbortSignal,
-): Promise<{ content: Array<{ type: "text"; text: string }> }> {
+  onUpstreamCall?: () => void,
+  onUpstreamResult?: (result: LocalModelResult) => void,
+  onFilesRead?: (info: { included: string[]; truncated: string[]; skipped: string[]; bytes: number }) => void,
+  onUpstreamTiming?: (ms: number) => void,
+  onFilesWritten?: (files: Array<{ rel: string; created: boolean; added: number; removed: number }>) => void,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
   if (toolName !== TOOL_IMPLEMENT && toolName !== TOOL_DIRECT) {
     throw new Error(`Unknown tool: ${toolName}`);
   }
-  // Checked before the arguments: the call target is wrong whatever they say,
-  // and a complaint about an argument sends the caller to fix the wrong thing.
   if (toolName === TOOL_IMPLEMENT && !servesImplementTool(config)) {
     throw new Error(
       `Tool ${TOOL_IMPLEMENT} is not served by this instance` +
@@ -258,13 +283,8 @@ export async function handleToolCall(
   }
   const args = (rawArgs ?? {}) as ToolArgs;
 
-  // A misspelled key was silently ignored, which is the same class of bug as the
-  // unvalidated `mode`: the caller asks for something and quietly does not get it.
   const unknown = Object.keys(args).filter((k) => !KNOWN_ARGS.has(k)).sort();
   if (unknown.length > 0) {
-    // `examples` stays in KNOWN_ARGS regardless of gating, so it is still recognized
-    // and gets its own "only valid with classify" error — but listing it as valid
-    // advice on an instance whose published schema excludes classify is a dead end.
     const examplesUsable = config.tasks === null || config.tasks.includes("classify");
     const filesUsable = config.allowedRoots !== null;
     const listedArgs = [...KNOWN_ARGS].filter(
@@ -279,15 +299,11 @@ export async function handleToolCall(
   if (typeof args.prompt !== "string" || args.prompt.trim() === "") {
     throw new Error("`prompt` is required and must be a non-empty string");
   }
-  // Unlike include_review_reminder, which deliberately ignores a malformed value,
-  // a bad mode silently returns the OPPOSITE wrapping from what was asked for.
   if (args.mode !== undefined && !MODES.includes(args.mode as (typeof MODES)[number])) {
     throw new Error(
       `\`mode\` must be one of ${MODES.join(", ")}; got: ${JSON.stringify(args.mode)}`,
     );
   }
-  // Previously any non-string was dropped and the default persona used instead,
-  // so a caller passing the wrong type silently got different behaviour.
   if (args.system !== undefined && (typeof args.system !== "string" || args.system.trim() === "")) {
     throw new Error(
       `\`system\` must be a string with content when provided; got: ${short(args.system)}`,
@@ -322,9 +338,6 @@ export async function handleToolCall(
     }
   }
 
-  // After the validity and allowlist checks: a caller who named the wrong task has
-  // a different mistake from one who named none, and collapsing them sends the
-  // first to the wrong fix.
   if (task === undefined && config.tasks !== null) {
     throw new Error(
       "`task` is required on this instance" +
@@ -363,9 +376,6 @@ export async function handleToolCall(
             `\`output\`; got: ${short(ex)}`,
         );
       }
-      // Matches the top-level argument check: a key beyond the two recognized
-      // ones is silently dropped otherwise, the same class of bug as an
-      // unvalidated `mode`.
       const unknownKeys = Object.keys(ex as object).filter((k) => k !== "input" && k !== "output");
       if (unknownKeys.length > 0) {
         throw new Error(
@@ -376,16 +386,12 @@ export async function handleToolCall(
     });
     examples = args.examples as FewShotExample[];
   }
-  // Checked after the shape validation so a caller sending one malformed example
-  // gets the specific complaint rather than the generic "required" message.
   if (task === "classify" && examples === undefined) {
     throw new Error(EXAMPLES_REQUIRED);
   }
 
   let max_lines: number | undefined;
   if (args.max_lines !== undefined) {
-    // Number.isInteger rejects NaN, Infinity and non-integers in one check;
-    // typeof guards a string like "3" that would otherwise pass loose comparison.
     if (
       typeof args.max_lines !== "number" ||
       !Number.isInteger(args.max_lines) ||
@@ -394,8 +400,9 @@ export async function handleToolCall(
       throw new Error(`\`max_lines\` must be a positive integer; got: ${short(args.max_lines)}`);
     }
     if (task === undefined || !TASK_PROFILES[task].acceptsMaxLines) {
+      const acceptedHere = maxLinesTasksFor(config.tasks ?? TASKS);
       throw new Error(
-        `\`max_lines\` is only valid with task ${MAX_LINES_TASKS.map((t) => `"${t}"`).join(", ")}; got task ` +
+        `\`max_lines\` is only valid with task ${acceptedHere.map((t) => `"${t}"`).join(", ")}; got task ` +
           `${task !== undefined ? `"${task}"` : "(none)"}.`,
       );
     }
@@ -403,18 +410,121 @@ export async function handleToolCall(
   }
 
   const profile = task !== undefined ? TASK_PROFILES[task] : undefined;
-  // A spread copy rather than extra parameters: local-client.ts already reads
-  // every sampling value off the config object it is handed.
   const effectiveConfig: Config = {
     ...config,
     temperature: profile?.temperature ?? config.temperature,
     maxTokens: Math.min(profile?.maxTokens ?? config.maxTokens, config.maxTokens),
   };
 
-  // `files`/`root` let the server read context itself instead of the caller
-  // inlining file content into `prompt` — checked after prompt/task validation
-  // so a caller who also got those wrong sees the more specific complaint,
-  // matching how `max_lines`/`examples` are ordered above.
+  if (args.targets !== undefined) {
+    if (toolName !== TOOL_IMPLEMENT || !writesEnabled(config)) {
+      throw new Error(
+        "`targets` is only accepted by local_implement on an instance with writeRoots configured.",
+      );
+    }
+    if (
+      !Array.isArray(args.targets) ||
+      args.targets.length === 0 ||
+      args.targets.length > 20 ||
+      args.targets.some((t) => typeof t !== "string" || t.trim() === "")
+    ) {
+      throw new Error("`targets` must be a non-empty array of 1 to 20 non-empty string paths");
+    }
+    if (args.root === undefined) {
+      throw new Error("`root` is required when `targets` is provided");
+    }
+    if (task !== "implement" && task !== "fix") {
+      throw new Error(
+        `\`targets\` requires task "implement" or "fix", got task ${task !== undefined ? `"${task}"` : "(none)"}.`,
+      );
+    }
+    const targetRels = args.targets as string[];
+    const realRoot = resolveAllowedRoot(args.root, config.allowedRoots);
+    const prepared = prepareTargets(realRoot, targetRels, config.writeRoots ?? []);
+    const directive = buildApplyDirective(prepared.map((p) => ({ rel: p.rel, exists: p.exists })));
+    // `files` must reach the model in apply mode too, otherwise it edits without the spec.
+    let applyPrompt = args.prompt;
+    if (Array.isArray(args.files) && args.files.length > 0 && args.files.every((f) => typeof f === "string")) {
+      const baseEstimate = estimateTokens(buildMessages({ prompt: args.prompt, system, task, examples, directive }).map((m) => m.content).join("\n"));
+      const headroom = effectiveConfig.tokenBudget - effectiveConfig.maxTokens - baseEstimate;
+      if (headroom <= 0) {
+        throw new Error(`No token budget remains for file content: prompt alone is estimated at ${baseEstimate} tokens against a budget of ${effectiveConfig.tokenBudget}.`);
+      }
+      const filesResult = readRequestedFiles(realRoot, args.files as string[], headroom);
+      onFilesRead?.({ included: filesResult.included, truncated: filesResult.truncated, skipped: filesResult.skipped.map((s) => s.path), bytes: Buffer.byteLength(filesResult.text, "utf8") });
+      if (filesResult.included.length === 0 && filesResult.truncated.length === 0) {
+        throw new Error(`None of the requested files could be read: ${filesResult.skipped.map((s) => `${s.path} (${s.reason})`).join("; ")}`);
+      }
+      applyPrompt = `${args.prompt}\n\n${filesResult.text}`;
+    }
+    const applyMessages = buildMessages({ prompt: applyPrompt, system, task, examples, directive });
+    const applyText = applyMessages.map((m) => m.content).join("\n");
+    const applyEstimated = estimateTokens(applyText);
+    if (applyEstimated + effectiveConfig.maxTokens > effectiveConfig.tokenBudget) {
+      throw new Error(
+        `Prompt exceeds tokenBudget: estimated ${applyEstimated} prompt tokens + ${effectiveConfig.maxTokens} ` +
+          `reserved for the response = ${applyEstimated + effectiveConfig.maxTokens}, over the budget of ${effectiveConfig.tokenBudget}. ` +
+          `Reduce the number of targets, lower maxTokens, or raise tokenBudget in config.`,
+      );
+    }
+    onUpstreamCall?.();
+    const beforeUpstream = Date.now();
+    const applyResult = await callLocalModel(applyMessages, effectiveConfig, signal);
+    onUpstreamResult?.(applyResult);
+    onUpstreamTiming?.(Date.now() - beforeUpstream);
+
+    if (applyResult.finishReason === "length") {
+      return {
+        content: [{
+          type: "text",
+          text: `[local-router] REFUSED: the local model stopped at max_tokens (${effectiveConfig.maxTokens}) before finishing its edit blocks. Split the change across fewer targets or raise maxTokens. No file was written.`,
+        }],
+        isError: true,
+      };
+    }
+
+    const parsed = parseEditReply(applyResult.content);
+    if (parsed.need !== null) {
+      return {
+        content: [{ type: "text", text: `[local-router] NO_CHANGE: the model needs more context: ${parsed.need}. No file was written.` }],
+      };
+    }
+    if (parsed.errors.length > 0) {
+      return {
+        content: [{ type: "text", text: `[local-router] REFUSED: could not parse the model's reply: ${parsed.errors.join("; ")}. No file was written.` }],
+        isError: true,
+      };
+    }
+
+    const plan = planEdits(parsed, prepared);
+    if (plan.errors.length > 0) {
+      return {
+        content: [{ type: "text", text: `[local-router] REFUSED: ${plan.errors.join("; ")}. No file was written.` }],
+        isError: true,
+      };
+    }
+    if (plan.changes.length === 0) {
+      return {
+        content: [{ type: "text", text: "[local-router] NO_CHANGE: the requested edits would not change any file. No file was written." }],
+      };
+    }
+
+    const commit = commitChanges(plan.changes, prepared, realRoot, config.writeRoots ?? []);
+    if (!commit.ok) {
+      return {
+        content: [{ type: "text", text: `[local-router] REFUSED: ${(commit.errors ?? []).join("; ")}. No file was written.` }],
+        isError: true,
+      };
+    }
+
+    onFilesWritten?.(commit.files);
+    const { diff, added, removed } = buildDiff(plan.changes);
+    const fileList = commit.files.map((f) => f.rel).join(", ");
+    return {
+      content: [{ type: "text", text: `[local-router] APPLIED: wrote ${commit.files.length} file(s) (${fileList}), ${added} added, ${removed} removed.\n\n${diff}` }],
+    };
+  }
+
   let effectivePrompt = args.prompt;
   let fileDiagnostics = "";
   if (args.files !== undefined || args.root !== undefined) {
@@ -425,9 +535,6 @@ export async function handleToolCall(
       throw new Error("`files` entries must all be strings");
     }
     const realRoot = resolveAllowedRoot(args.root, config.allowedRoots);
-    // Headroom is measured against the prompt/task/examples assembly the
-    // caller already asked for, so file content only claims what's left —
-    // this is what lets the server "chunk" instead of a single hard reject.
     const baseMessages = buildMessages({ prompt: args.prompt, system, output_format, task, examples, max_lines });
     const baseEstimated = estimateTokens(baseMessages.map((m) => m.content).join("\n"));
     const headroom = effectiveConfig.tokenBudget - effectiveConfig.maxTokens - baseEstimated;
@@ -439,6 +546,7 @@ export async function handleToolCall(
       );
     }
     const filesResult = readRequestedFiles(realRoot, args.files, headroom);
+    onFilesRead?.({ included: filesResult.included, truncated: filesResult.truncated, skipped: filesResult.skipped.map((s) => s.path), bytes: Buffer.byteLength(filesResult.text, "utf8") });
     if (filesResult.included.length === 0 && filesResult.truncated.length === 0) {
       const reasons = filesResult.skipped.map((s) => `${s.path} (${s.reason})`).join("; ");
       throw new Error(`None of the requested files could be read: ${reasons}`);
@@ -467,11 +575,18 @@ export async function handleToolCall(
     );
   }
 
+  onUpstreamCall?.();
+  const beforeUpstream = Date.now();
   const result = await callLocalModel(messages, effectiveConfig, signal);
-  const body = shouldWrapOutput(toolName, args, profile)
+  const afterUpstream = Date.now();
+  onUpstreamResult?.(result);
+  onUpstreamTiming?.(afterUpstream - beforeUpstream);
+  let body = shouldWrapOutput(toolName, args, profile)
     ? wrapWithReviewReminder(result.content)
     : result.content;
-  // Appended outside the wrapper so it reads as the plugin's voice, not the model's.
+  if (writesEnabled(config) && toolName === TOOL_IMPLEMENT && (task === "implement" || task === "fix") && shouldWrapOutput(toolName, args, profile)) {
+    body = `${body}\n\n${WRITABLE_TEXT_REMINDER}`;
+  }
   const text =
     result.finishReason === "length"
       ? `${body}\n\n[local-router] WARNING: the local model stopped at max_tokens ` +
@@ -481,22 +596,118 @@ export async function handleToolCall(
   return { content: [{ type: "text", text: text + fileDiagnostics }] };
 }
 
-/**
- * The SDK's Protocol._onerror is `this.onerror?.(error)` with no fallback, so
- * leaving this unassigned drops inbound deserialization failures, stdin errors
- * and outbound send failures with no trace at all. stderr is safe here: the
- * stdio transport uses only stdin/stdout, and Claude Code captures stderr.
- */
+export async function handleToolCall(
+  toolName: string,
+  rawArgs: unknown,
+  config: Config,
+  signal?: AbortSignal,
+  clientVersion?: string,
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  const callId = newCallId();
+  const startedAt = Date.now();
+  let cwd = "";
+  try { cwd = process.cwd(); } catch { /* best effort */ }
+  const args = (rawArgs ?? {}) as { prompt?: unknown; task?: unknown; root?: unknown; targets?: unknown };
+  const promptBytes =
+    typeof args.prompt === "string" ? Buffer.byteLength(args.prompt, "utf8") : 0;
+  const task = typeof args.task === "string" ? args.task : null;
+  const root = typeof args.root === "string" ? args.root : null;
+  const targets = Array.isArray(args.targets) ? args.targets.filter((t): t is string => typeof t === "string") : [];
+
+  const entry: UsageEntry = {
+    v: 1,
+    ts: new Date(startedAt).toISOString(),
+    call_id: callId,
+    pid: process.pid,
+    cwd,
+    client: clientVersion ?? null,
+    tier: config.tier,
+    model: config.model,
+    tool: toolName === TOOL_IMPLEMENT ? "local_implement" : "local_direct",
+    task,
+    mode: targets.length > 0 ? "apply" : "text",
+    outcome: "ok",
+    root,
+    files_read: [],
+    files_truncated: [],
+    files_skipped: [],
+    targets,
+    files_written: [],
+    prompt_bytes: promptBytes,
+    file_bytes: 0,
+    bytes_in: promptBytes,
+    bytes_out: 0,
+    prompt_tokens: null,
+    completion_tokens: null,
+    attempts: 1,
+    finish_reason: null,
+    stray_lines: 0,
+    upstream_ms: null,
+    duration_ms: 0,
+    reasons: [],
+  };
+
+  let filesReadInfo: { included: string[]; truncated: string[]; skipped: string[]; bytes: number } | null = null;
+  let filesWritten: UsageFileWritten[] = [];
+
+  let upstreamAttempted = false;
+  try {
+    const result = await runToolCall(
+      toolName,
+      rawArgs,
+      config,
+      signal,
+      () => {
+        upstreamAttempted = true;
+      },
+      (upstream: LocalModelResult) => {
+        entry.finish_reason = upstream.finishReason;
+        if (upstream.usage) {
+          entry.prompt_tokens = upstream.usage.promptTokens;
+          entry.completion_tokens = upstream.usage.completionTokens;
+        }
+      },
+      (info) => {
+        filesReadInfo = info;
+      },
+      (ms) => {
+        entry.upstream_ms = ms;
+      },
+      (files) => {
+        filesWritten = files.map((f) => ({ path: f.rel, created: f.created, added: f.added, removed: f.removed }));
+      },
+    );
+    const text = result.content.map((c) => c.text).join("");
+    entry.bytes_out = Buffer.byteLength(text, "utf8");
+    entry.outcome = "ok";
+    const readInfo = filesReadInfo as { included: string[]; truncated: string[]; skipped: string[]; bytes: number } | null;
+    if (readInfo !== null) {
+      entry.files_read = readInfo.included;
+      entry.files_truncated = readInfo.truncated;
+      entry.files_skipped = readInfo.skipped;
+      entry.file_bytes = readInfo.bytes;
+    }
+    if (entry.mode === "apply") {
+      entry.outcome = result.isError ? "refused" : text.startsWith("[local-router] NO_CHANGE") ? "no_change" : text.startsWith("[local-router] APPLIED") ? "applied" : "ok";
+      entry.files_written = filesWritten;
+    }
+    return result;
+  } catch (err) {
+    const message = (err as Error).message;
+    entry.outcome = upstreamAttempted ? "error" : "rejected";
+    entry.reasons = [message.slice(0, 200)];
+    throw err;
+  } finally {
+    entry.duration_ms = Date.now() - startedAt;
+    appendUsage(config, entry);
+  }
+}
+
 export function logProtocolError(err: unknown): void {
   const message = err instanceof Error ? err.message : String(err);
   process.stderr.write(`[local-router] protocol error: ${message}\n`);
 }
 
-/**
- * Split from main() so tests can exercise the real wiring — onerror assignment,
- * both request handlers — over an in-memory transport instead of asserting on
- * server.ts's source text. Connects no transport itself.
- */
 export function createServer(config: Config): Server {
   const server = new Server(
     { name: "local-router", version: "0.1.0" },
@@ -509,9 +720,11 @@ export function createServer(config: Config): Server {
     tools: buildToolDefinitions(config),
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (req, extra) =>
-    handleToolCall(req.params.name, req.params.arguments, config, extra?.signal),
-  );
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra) => {
+    const client = server.getClientVersion();
+    const clientVersion = client ? `${client.name} ${client.version}` : undefined;
+    return handleToolCall(req.params.name, req.params.arguments, config, extra?.signal, clientVersion);
+  });
 
   return server;
 }
@@ -523,12 +736,6 @@ async function main(): Promise<void> {
   await server.connect(transport);
 }
 
-/**
- * True only when this file is the process entrypoint, so importing it for tests
- * does not start a transport or exit. Both sides go through realpath because
- * import.meta.url resolves symlinks while process.argv[1] does not — on macOS
- * that alone makes /tmp and /private/tmp compare unequal.
- */
 function isDirectRun(): boolean {
   const entry = process.argv[1];
   if (!entry) return false;
@@ -536,10 +743,7 @@ function isDirectRun(): boolean {
   try {
     if (realpathSync(entry) === realpathSync(self)) return true;
   } catch {
-    // fall through to the extensionless comparison below
   }
-  // A bin shim or symlink can present argv[1] without the .js extension, which
-  // silently exited 0 with no output and looked exactly like a crash.
   try {
     return realpathSync(entry + ".js") === realpathSync(self);
   } catch {

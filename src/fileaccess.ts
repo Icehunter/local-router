@@ -2,6 +2,15 @@ import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { estimateTokens } from "./tokens.js";
 
+/**
+ * Returns true when `real` IS `base`, or is a path lexically under it. Both arguments
+ * must already be realpath-resolved by the caller; this function does no I/O
+ * and no normalization of its own.
+ */
+export function isInside(real: string, base: string): boolean {
+  return real === base || real.startsWith(base + sep);
+}
+
 /** Guards against reading one huge file into memory in a single call. */
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 
@@ -28,7 +37,7 @@ export function resolveAllowedRoot(root: unknown, allowedRoots: readonly string[
   if (allowedRoots === null) {
     throw new Error(
       "`root`/`files` are not enabled on this instance. Set LOCAL_LLM_ALLOWED_ROOTS to enable " +
-        "server-side file reads, or inline content into `prompt`/`context` instead.",
+        "server-side file reads, or inline content into `prompt` instead.",
     );
   }
   if (typeof root !== "string" || root.trim() === "") {

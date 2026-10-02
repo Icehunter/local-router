@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -32,6 +32,8 @@ const baseConfig: Config = {
   tier: null,
   tasks: null,
   allowedRoots: null,
+  writeRoots: null,
+  stateDir: null,
 };
 
 function mockUpstream(content: string, finish_reason: string | null = "stop") {
@@ -816,12 +818,12 @@ describe("handleToolCall — task sampling overrides", () => {
   });
 
   it("reserves only the effective maxTokens in the budget precondition", async () => {
-    // 680384 bytes of ASCII puts estimateTokens (ceil(bytes/4)) at ~170K on
+    // 510000 bytes of ASCII puts estimateTokens (ceil(bytes/3)) at ~170K on
     // baseConfig's stock tokenBudget/maxTokens (180000/16000) — a pair loadConfig
     // actually accepts, unlike an inflated maxTokens >= tokenBudget config.
     // No task: ~170K + config.maxTokens (16000) clears the 180000 budget → rejected.
     // task "review": the profile caps maxTokens at 1500, so ~170K + 1500 fits → accepted.
-    const bigPrompt = "a".repeat(680384);
+    const bigPrompt = "a".repeat(510000);
     const err = (await handleToolCall(
       "local_direct", { prompt: bigPrompt }, baseConfig,
     ).catch((e: Error) => e)) as Error;
@@ -1039,6 +1041,25 @@ describe("buildToolDefinitions", () => {
       expect(tool.description).toContain("reads files itself");
     }
   });
+
+  it("the max_lines description only lists tasks this instance actually accepts", () => {
+    const cfg: Config = { ...baseConfig, tasks: ["review", "explain"] };
+    const tools = buildToolDefinitions(cfg);
+    const tool = tools[0];
+    const p = prop(tool, "max_lines");
+    expect(p.description).toContain('task "review"');
+    expect(p.description).not.toContain('task "summarize"');
+    expect(p.description).not.toContain('task "extract"');
+  });
+
+  it("appends a budget line stating the real per-call input budget in tokens and KB", () => {
+    const tools = buildToolDefinitions(baseConfig);
+    for (const tool of tools) {
+      expect(tool.description).toContain("about 164000 tokens");
+      expect(tool.description).toContain("480 KB");
+      expect(tool.description).toContain("up to 16000 tokens");
+    }
+  });
 });
 
 describe("createServer — ListTools wiring", () => {
@@ -1087,5 +1108,93 @@ describe("createServer — ListTools wiring", () => {
     ]);
     expect(implement.description).toContain("Tier: coder. Accepts: implement, review.");
     expect(direct.description).toContain("Tier: coder. Accepts: implement, review.");
+  });
+});
+
+describe("handleToolCall — usage ledger", () => {
+  let stateDir: string;
+
+  function readLedgerLines(dir: string): any[] {
+    const path = join(dir, "usage.jsonl");
+    const text = readFileSync(path, "utf8");
+    return text.trim().split("\n").filter((l) => l.length > 0).map((l) => JSON.parse(l));
+  }
+
+  beforeEach(() => {
+    stateDir = mkdtempSync(join(tmpdir(), "local-router-ledger-int-"));
+  });
+
+  afterEach(() => {
+    rmSync(stateDir, { recursive: true, force: true });
+  });
+
+  it("writes exactly one line with outcome 'ok' on a successful call", async () => {
+    mockUpstream("hello");
+    const cfg: Config = { ...baseConfig, stateDir, tier: "coder" };
+    await handleToolCall("local_direct", { prompt: "x" }, cfg, undefined, "test-client 1.0");
+
+    const lines = readLedgerLines(stateDir);
+    expect(lines).toHaveLength(1);
+    const entry = lines[0];
+    expect(entry.outcome).toBe("ok");
+    expect(entry.tool).toBe("local_direct");
+    expect(entry.tier).toBe("coder");
+    expect(entry.client).toBe("test-client 1.0");
+    expect(entry.bytes_out).toBeGreaterThan(0);
+  });
+
+  it("writes outcome 'rejected' for a validation error that never reaches the upstream, without calling fetch", async () => {
+    const fetchSpy = mockUpstream("unused");
+    await handleToolCall("local_direct", { prompt: "x", output_format: "bogus" }, { ...baseConfig, stateDir }).catch(() => {});
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    const lines = readLedgerLines(stateDir);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].outcome).toBe("rejected");
+  });
+
+  it("writes outcome 'error' for a failure that happens after the upstream call was attempted", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("boom", { status: 500 }));
+    await handleToolCall("local_direct", { prompt: "x" }, { ...baseConfig, stateDir }).catch(() => {});
+
+    const lines = readLedgerLines(stateDir);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].outcome).toBe("error");
+  });
+
+  it("writes no file at all when stateDir is null", async () => {
+    mockUpstream("ok");
+    await handleToolCall("local_direct", { prompt: "x" }, baseConfig);
+
+    expect(existsSync(join(stateDir, "usage.jsonl"))).toBe(false);
+  });
+
+  it("the ledger line's prompt_bytes reflects the caller's prompt", async () => {
+    mockUpstream("ok");
+    const prompt = "a".repeat(37);
+    await handleToolCall("local_direct", { prompt }, { ...baseConfig, stateDir });
+
+    const lines = readLedgerLines(stateDir);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].prompt_bytes).toBe(37);
+  });
+
+  it("records upstream prompt_tokens/completion_tokens and finish_reason when present", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          choices: [{ finish_reason: "stop", message: { content: "ok" } }],
+          usage: { prompt_tokens: 55, completion_tokens: 7 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    await handleToolCall("local_direct", { prompt: "x" }, { ...baseConfig, stateDir });
+
+    const lines = readLedgerLines(stateDir);
+    expect(lines).toHaveLength(1);
+    expect(lines[0].prompt_tokens).toBe(55);
+    expect(lines[0].completion_tokens).toBe(7);
+    expect(lines[0].finish_reason).toBe("stop");
   });
 });

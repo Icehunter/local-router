@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, writesEnabled } from "../src/config.js";
 
 let tempDir: string;
 const origEnv = { ...process.env };
@@ -27,6 +27,9 @@ beforeEach(() => {
   delete process.env.LOCAL_LLM_TIER;
   delete process.env.LOCAL_LLM_TASKS;
   delete process.env.LOCAL_LLM_ALLOWED_ROOTS;
+  delete process.env.LOCAL_LLM_WRITE_ROOTS;
+  delete process.env.LOCAL_LLM_REQUIRE_TARGETS;
+  delete process.env.LOCAL_LLM_STATE_DIR;
 });
 
 afterEach(() => {
@@ -745,6 +748,158 @@ describe("allowedRoots", () => {
     loadConfig();
     const output = warn.mock.calls.map((c) => String(c[0])).join("");
     expect(output).not.toMatch(/LOCAL_LLM_ALLOWED_ROOTS/);
+    warn.mockRestore();
+  });
+});
+
+describe("writeRoots", () => {
+  function writeBase(extra: Record<string, unknown> = {}) {
+    writeFileSync(
+      join(tempDir, "config.json"),
+      JSON.stringify({ baseUrl: "http://1.2.3.4:1234", model: "m", ...extra }),
+    );
+  }
+
+  it("defaults to null when not set in config or env", () => {
+    writeBase();
+    expect(loadConfig().writeRoots).toBeNull();
+  });
+
+  it("reads an array of absolute paths from config.json", () => {
+    writeBase({ writeRoots: ["/abs/a", "/abs/b"] });
+    expect(loadConfig().writeRoots).toEqual(["/abs/a", "/abs/b"]);
+  });
+
+  it("env override wins over config.json (comma-separated)", () => {
+    writeBase({ writeRoots: ["/cfg/path"] });
+    process.env.LOCAL_LLM_WRITE_ROOTS = "/env/a,/env/b";
+    expect(loadConfig().writeRoots).toEqual(["/env/a", "/env/b"]);
+  });
+
+  it("throws mentioning 'absolute' for a relative entry in config.json", () => {
+    writeBase({ writeRoots: ["relative/path"] });
+    expect(() => loadConfig()).toThrow(/absolute/);
+  });
+
+  it("throws mentioning 'writeRoots' for an empty array in config.json", () => {
+    writeBase({ writeRoots: [] });
+    expect(() => loadConfig()).toThrow(/writeRoots/);
+  });
+
+  it("throws 'must list at least one path' when env is only separators", () => {
+    writeBase();
+    process.env.LOCAL_LLM_WRITE_ROOTS = " , , ";
+    expect(() => loadConfig()).toThrow(/must list at least one path/);
+  });
+});
+
+describe("stateDir", () => {
+  function writeBase(extra: Record<string, unknown> = {}) {
+    writeFileSync(
+      join(tempDir, "config.json"),
+      JSON.stringify({ baseUrl: "http://1.2.3.4:1234", model: "m", ...extra }),
+    );
+  }
+
+  it("defaults to join(CLAUDE_PLUGIN_ROOT, 'logs') when unset", () => {
+    writeBase();
+    expect(loadConfig().stateDir).toBe(join(tempDir, "logs"));
+  });
+
+  it("blank LOCAL_LLM_STATE_DIR disables it (null), overriding config.json", () => {
+    writeBase({ stateDir: "/cfg/state" });
+    process.env.LOCAL_LLM_STATE_DIR = "";
+    expect(loadConfig().stateDir).toBeNull();
+  });
+
+  it("non-blank LOCAL_LLM_STATE_DIR must be absolute or throws mentioning 'stateDir' and 'absolute'", () => {
+    writeBase();
+    process.env.LOCAL_LLM_STATE_DIR = "relative/state";
+    expect(() => loadConfig()).toThrow(/stateDir/);
+    expect(() => loadConfig()).toThrow(/absolute/);
+  });
+
+  it("config.json can set stateDir directly", () => {
+    writeBase({ stateDir: "/cfg/state" });
+    expect(loadConfig().stateDir).toBe("/cfg/state");
+  });
+
+  it("env overrides config.json for stateDir", () => {
+    writeBase({ stateDir: "/cfg/state" });
+    process.env.LOCAL_LLM_STATE_DIR = "/env/state";
+    expect(loadConfig().stateDir).toBe("/env/state");
+  });
+});
+
+describe("writesEnabled", () => {
+  function writeBase(extra: Record<string, unknown> = {}) {
+    writeFileSync(
+      join(tempDir, "config.json"),
+      JSON.stringify({ baseUrl: "http://1.2.3.4:1234", model: "m", ...extra }),
+    );
+  }
+
+  it("returns false when writeRoots is null (regardless of allowedRoots)", () => {
+    writeBase({ allowedRoots: ["/abs/a"] });
+    expect(writesEnabled(loadConfig())).toBe(false);
+  });
+
+  it("returns false when allowedRoots is null (regardless of writeRoots)", () => {
+    writeBase({ writeRoots: ["/abs/a"] });
+    expect(writesEnabled(loadConfig())).toBe(false);
+  });
+
+  it("returns true when both are set and effective tasks (null, i.e. all) include implement and fix", () => {
+    writeBase({ allowedRoots: ["/abs/a"], writeRoots: ["/abs/b"] });
+    expect(writesEnabled(loadConfig())).toBe(true);
+  });
+
+  it("returns false when both are set but the explicit task list excludes implement and fix", () => {
+    writeBase({
+      allowedRoots: ["/abs/a"],
+      writeRoots: ["/abs/b"],
+      tasks: ["review", "summarize", "extract", "explain", "classify"],
+    });
+    expect(writesEnabled(loadConfig())).toBe(false);
+  });
+
+  it("returns true when the explicit task list includes fix only (of the two)", () => {
+    writeBase({
+      allowedRoots: ["/abs/a"],
+      writeRoots: ["/abs/b"],
+      tasks: ["review", "fix"],
+    });
+    expect(writesEnabled(loadConfig())).toBe(true);
+  });
+
+  it("returns true when the explicit task list includes implement only (of the two)", () => {
+    writeBase({
+      allowedRoots: ["/abs/a"],
+      writeRoots: ["/abs/b"],
+      tasks: ["review", "implement"],
+    });
+    expect(writesEnabled(loadConfig())).toBe(true);
+  });
+
+  it("writes a stderr warning containing 'writeRoots ignored' when effective tasks exclude implement and fix", () => {
+    writeBase({
+      allowedRoots: ["/abs/a"],
+      writeRoots: ["/abs/b"],
+      tasks: ["review", "summarize"],
+    });
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    loadConfig();
+    const output = warn.mock.calls.map((c) => String(c[0])).join("");
+    expect(output).toContain("writeRoots ignored");
+    warn.mockRestore();
+  });
+
+  it("does not write a 'writeRoots ignored' warning when effective tasks include implement or fix", () => {
+    writeBase({ allowedRoots: ["/abs/a"], writeRoots: ["/abs/b"] });
+    const warn = vi.spyOn(process.stderr, "write").mockReturnValue(true);
+    loadConfig();
+    const output = warn.mock.calls.map((c) => String(c[0])).join("");
+    expect(output).not.toContain("writeRoots ignored");
     warn.mockRestore();
   });
 });

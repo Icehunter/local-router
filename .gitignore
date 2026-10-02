@@ -5,3 +5,4 @@ config.json
 .DS_Store
 .vitest/
 coverage/
+logs/
