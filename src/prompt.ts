@@ -288,7 +288,9 @@ export function buildApplyDirective(targets: readonly ApplyTargetInfo[]): string
         missing.map((t) => t.rel).join(", ") + "\n" +
         "=== FILE: <path> ===\n" +
         "<the entire file content>\n" +
-        "=== END FILE ===",
+        "=== END FILE ===\n" +
+        "This overrides the EDIT-only rule above for these files. The header and END lines are required: " +
+        "a bare code block or prose is discarded, even if the request asks for \"only the code\".",
     );
   }
   lines.push("Use each path exactly as it appears in its file header above.");

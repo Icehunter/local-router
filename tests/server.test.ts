@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -1196,5 +1196,34 @@ describe("handleToolCall — usage ledger", () => {
     expect(lines[0].prompt_tokens).toBe(55);
     expect(lines[0].completion_tokens).toBe(7);
     expect(lines[0].finish_reason).toBe("stop");
+  });
+});
+
+describe("handleToolCall — apply mode reply parsing", () => {
+  let root: string;
+  beforeEach(() => {
+    root = realpathSync(mkdtempSync(join(tmpdir(), "lr-apply-")));
+  });
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  const applyConfig = () => ({ ...baseConfig, allowedRoots: [root], writeRoots: [root] });
+  const applyArgs = () => ({ prompt: "write it", task: "implement", root, targets: ["scripts/a.sh"] });
+
+  it("refuses with an excerpt when the reply has no FILE or EDIT blocks", async () => {
+    mockUpstream("```bash\n#!/usr/bin/env bash\necho hi\n```");
+    const res = await handleToolCall("local_implement", applyArgs(), applyConfig());
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("REFUSED: the model's reply had no FILE or EDIT blocks");
+    expect(res.content[0].text).toContain("echo hi");
+    expect(existsSync(join(root, "scripts/a.sh"))).toBe(false);
+  });
+
+  it("writes a new file from a FILE block", async () => {
+    mockUpstream("=== FILE: scripts/a.sh ===\necho hi\n=== END FILE ===");
+    const res = await handleToolCall("local_implement", applyArgs(), applyConfig());
+    expect(res.content[0].text).toContain("APPLIED");
+    expect(readFileSync(join(root, "scripts/a.sh"), "utf8")).toContain("echo hi");
   });
 });

@@ -1,6 +1,8 @@
 import { appendFileSync, chmodSync, existsSync, statSync } from "node:fs";
 import type { Config } from "./config.js";
 import type { ChatMessage } from "./prompt.js";
+import { captureRequest, captureResponse } from "./trace.js";
+import type { CapturedRequest, TraceCapture } from "./trace.js";
 
 const TRUNCATE_BYTES = 8192;
 
@@ -12,6 +14,8 @@ export interface LocalModelResult {
   finishReason: string | null;
   /** Upstream `usage` (prompt_tokens/completion_tokens), when the backend sends it; null otherwise. */
   usage: { promptTokens: number; completionTokens: number } | null;
+  /** Present only for an explicitly requested inline trace. Never persisted. */
+  trace?: TraceCapture;
 }
 
 function truncate(text: string): string {
@@ -83,6 +87,7 @@ async function callLocalModelInner(
   config: Config,
   url: string,
   externalSignal?: AbortSignal,
+  includeTrace = false,
 ): Promise<LocalModelResult> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -112,6 +117,7 @@ async function callLocalModelInner(
 
   try {
     let response: Response;
+    let captured: CapturedRequest | undefined;
     try {
       const body: Record<string, unknown> = {
         model: config.model,
@@ -128,10 +134,12 @@ async function callLocalModelInner(
       if (config.enableThinking !== null) {
         body.chat_template_kwargs = { enable_thinking: config.enableThinking };
       }
+      const wireBody = JSON.stringify(body);
+      if (includeTrace) captured = captureRequest(wireBody, url);
       response = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify(body),
+        body: wireBody,
         signal: controller.signal,
       });
     } catch (err) {
@@ -183,6 +191,16 @@ async function callLocalModelInner(
       );
     }
 
+    if (captured) {
+      const trace = captureResponse(captured, json);
+      const choice = (json as { choices?: Array<{ message?: { content?: unknown } }> } | null)?.choices?.[0];
+      return {
+        content: typeof choice?.message?.content === "string" ? choice.message.content : "",
+        finishReason: trace.response.finish_reason,
+        usage: trace.response.usage === null ? null : { promptTokens: trace.response.usage.prompt_tokens, completionTokens: trace.response.usage.completion_tokens },
+        trace,
+      };
+    }
     if (json === null || typeof json !== "object") {
       throw new Error(
         `Upstream at ${url} returned 200 but a non-object body: ${JSON.stringify(json).slice(0, 300)}`,
@@ -234,11 +252,12 @@ export async function callLocalModel(
   messages: ChatMessage[],
   config: Config,
   signal?: AbortSignal,
+  includeTrace = false,
 ): Promise<LocalModelResult> {
   const url = `${config.baseUrl}/v1/chat/completions`;
   const requestSummary = { url, model: config.model, messages };
   try {
-    const result = await callLocalModelInner(messages, config, url, signal);
+    const result = await callLocalModelInner(messages, config, url, signal, includeTrace);
     writeDebugLog(config, {
       request: requestSummary,
       response: { ok: true, content: result.content, finishReason: result.finishReason },

@@ -405,6 +405,53 @@ Run `npm run usage` for a per-day, per-tier summary table, or `npm run usage -- 
 
 Most local servers default to single-request handling (e.g. llama.cpp's `--parallel 1`). The plugin makes one request at a time per tool call. If you want concurrency, configure your upstream for it.
 
+## Structured request traces (opt-in)
+
+Both tools advertise optional `include_trace: true`. An inline text call then returns
+its usual text content plus `structuredContent.local_router_trace`:
+
+```json
+{
+  "version": 1,
+  "request_id": "the-existing-usage-ledger-call-id",
+  "endpoint_id": "sha256:<64 lowercase hex digits>",
+  "complete": true,
+  "request": {
+    "model": "configured-model",
+    "messages": [{"role":"system","content":"exact expanded system"},{"role":"user","content":"exact expanded prompt and directive"}],
+    "parameters": {"max_tokens":16000,"temperature":0.2,"top_p":0.8,"top_k":20,"min_p":0.05,"repeat_penalty":1.1}
+  },
+  "response": {
+    "content": "unwrapped public model answer",
+    "finish_reason": "stop",
+    "usage": {"prompt_tokens":123,"completion_tokens":45}
+  }
+}
+```
+
+The request is captured from the actual HTTP JSON body at dispatch, after profile
+system prompts, output directives and effective sampling settings are applied.
+`parameters` contains every body field except `model` and `messages`, using the
+exact wire names. Optional fields such as `chat_template_kwargs` stay absent when
+not transmitted. Usage is `null` when unavailable. Endpoint identity hashes the
+upstream URL after removing username, password, query and fragment; the trace does
+not expose the URL, HTTP headers or API credentials. No model revision is invented.
+
+Version 1 supports inline calls only: combining `include_trace: true` with `files`,
+`root` or `targets` fails before file access, model inference or writes. Complete
+traces require a single supported assistant text response ending with `stop`.
+Missing/unknown finish reasons, additional choices, tool calls, private reasoning
+or unsupported response shapes produce `complete: false`. Private reasoning and
+non-text response fields are never copied into the trace; inline reasoning tags
+cause its answer content to be withheld. HTTP/protocol failures still fail the call.
+
+Trace data can contain private source code and is returned only when requested.
+The router does not persist traces, and the usage ledger still contains no prompt
+or answer bodies. Existing debug logging is separate, truncated and unsuitable as
+a complete training record. Consumers must enforce their own source allowlists,
+sanitization, completeness validation and explicit acceptance policy before export.
+Omitting `include_trace` (or setting it to `false`) keeps the legacy response.
+
 ## Troubleshooting
 
 **"Cannot reach upstream at ..."** — The host/port in `baseUrl` is wrong, or the server isn't running, or a firewall is blocking it. Test from your laptop: `curl http://<host>:<port>/v1/models`.

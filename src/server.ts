@@ -13,6 +13,7 @@ import { buildMessages, wrapWithReviewReminder, TASKS, TASK_PROFILES, buildApply
 import type { OutputFormat, Task, TaskProfile, FewShotExample, ApplyTargetInfo } from "./prompt.js";
 import { callLocalModel } from "./local-client.js";
 import type { LocalModelResult } from "./local-client.js";
+import type { LocalRouterTrace, TraceCapture } from "./trace.js";
 import { estimateTokens } from "./tokens.js";
 import { readRequestedFiles, resolveAllowedRoot } from "./fileaccess.js";
 import { newCallId, appendUsage } from "./ledger.js";
@@ -53,6 +54,11 @@ const BASE_TOOL_PROPERTIES = {
     type: "boolean",
     description:
       "Override whether to wrap output in <local_output> and append the review reminder.",
+  },
+  include_trace: {
+    type: "boolean",
+    description:
+      "Opt in to a versioned structured trace of the exact upstream text request and public answer. Inline prompts only; cannot be combined with files, root or targets.",
   },
 };
 
@@ -211,6 +217,7 @@ type ToolArgs = {
   output_format?: unknown;
   mode?: unknown;
   include_review_reminder?: unknown;
+  include_trace?: unknown;
   task?: unknown;
   examples?: unknown;
   max_lines?: unknown;
@@ -222,7 +229,7 @@ type ToolArgs = {
 const OUTPUT_FORMATS: readonly OutputFormat[] = ["code", "diff", "explanation"];
 const MODES = ["delegate", "direct"] as const;
 const KNOWN_ARGS = new Set([
-  "prompt", "system", "output_format", "mode", "include_review_reminder",
+  "prompt", "system", "output_format", "mode", "include_review_reminder", "include_trace",
   "task", "examples", "max_lines", "files", "root", "targets",
 ]);
 
@@ -298,6 +305,12 @@ async function runToolCall(
 
   if (typeof args.prompt !== "string" || args.prompt.trim() === "") {
     throw new Error("`prompt` is required and must be a non-empty string");
+  }
+  if (args.include_trace !== undefined && typeof args.include_trace !== "boolean") {
+    throw new Error("`include_trace` must be a boolean");
+  }
+  if (args.include_trace === true && (args.files !== undefined || args.root !== undefined || args.targets !== undefined)) {
+    throw new Error("`include_trace` supports inline prompts only; omit files, root and targets");
   }
   if (args.mode !== undefined && !MODES.includes(args.mode as (typeof MODES)[number])) {
     throw new Error(
@@ -496,6 +509,18 @@ async function runToolCall(
       };
     }
 
+    if (parsed.sections.length === 0) {
+      const excerpt = applyResult.content.trim().slice(0, 300);
+      return {
+        content: [{
+          type: "text",
+          text: `[local-router] REFUSED: the model's reply had no FILE or EDIT blocks (${parsed.strayLines} unparsed line(s)). ` +
+            `Reply began: ${JSON.stringify(excerpt)}. No file was written.`,
+        }],
+        isError: true,
+      };
+    }
+
     const plan = planEdits(parsed, prepared);
     if (plan.errors.length > 0) {
       return {
@@ -577,7 +602,7 @@ async function runToolCall(
 
   onUpstreamCall?.();
   const beforeUpstream = Date.now();
-  const result = await callLocalModel(messages, effectiveConfig, signal);
+  const result = await callLocalModel(messages, effectiveConfig, signal, args.include_trace === true);
   const afterUpstream = Date.now();
   onUpstreamResult?.(result);
   onUpstreamTiming?.(afterUpstream - beforeUpstream);
@@ -602,7 +627,7 @@ export async function handleToolCall(
   config: Config,
   signal?: AbortSignal,
   clientVersion?: string,
-): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean; structuredContent?: { local_router_trace: LocalRouterTrace } }> {
   const callId = newCallId();
   const startedAt = Date.now();
   let cwd = "";
@@ -651,6 +676,7 @@ export async function handleToolCall(
   let filesWritten: UsageFileWritten[] = [];
 
   let upstreamAttempted = false;
+  let trace: TraceCapture | undefined;
   try {
     const result = await runToolCall(
       toolName,
@@ -661,6 +687,7 @@ export async function handleToolCall(
         upstreamAttempted = true;
       },
       (upstream: LocalModelResult) => {
+        trace = upstream.trace;
         entry.finish_reason = upstream.finishReason;
         if (upstream.usage) {
           entry.prompt_tokens = upstream.usage.promptTokens;
@@ -691,7 +718,7 @@ export async function handleToolCall(
       entry.outcome = result.isError ? "refused" : text.startsWith("[local-router] NO_CHANGE") ? "no_change" : text.startsWith("[local-router] APPLIED") ? "applied" : "ok";
       entry.files_written = filesWritten;
     }
-    return result;
+    return trace ? { ...result, structuredContent: { local_router_trace: { version: 1, request_id: callId, ...trace } } } : result;
   } catch (err) {
     const message = (err as Error).message;
     entry.outcome = upstreamAttempted ? "error" : "rejected";
